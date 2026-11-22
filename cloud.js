@@ -265,7 +265,7 @@ async function saveDraft() {
       media_path: uploadedPath || previousPath,
       media_type: currentFile ? currentFile.type : (uploadedPath ? null : undefined),
       scheduled_at: form.scheduled_at,
-      status: 'draft'
+      status: form.scheduled_at ? 'scheduled' : 'draft'
     };
     if (row.media_type === undefined) delete row.media_type;
 
@@ -291,8 +291,24 @@ async function saveDraft() {
 
     progress(100, true);
     setTimeout(() => progress(0, false), 900);
-    status('تم حفظ المسودة في Supabase. لا يتم نشر أي شيء تلقائيًا؛ الموعد محفوظ فقط.');
-    toast('تم حفظ المسودة.', 'ok');
+
+    if (form.scheduled_at) {
+      const job = await createPublishJob(loadedId);
+      if (job === 'created') {
+        status('تم حفظ المسودة، ووُضعت في طابور النشر للموعد ' + fmtDate(form.scheduled_at) +
+          '. سيُنشر تلقائيًا فقط بعد ربط الحساب وتشغيل العامل.');
+        toast('تم الحفظ وإضافة المهمة إلى طابور النشر.', 'ok');
+      } else if (job === 'exists') {
+        status('تم حفظ المسودة. توجد مهام نشر سابقة لهذا المنشور، لذلك لم تُضف مهام مكررة.');
+        toast('تم حفظ المسودة.', 'ok');
+      } else {
+        status('تم حفظ المسودة، لكن تعذر إضافة مهام النشر: ' + job);
+        toast('حُفظت المسودة دون مهام نشر.', 'warn');
+      }
+    } else {
+      status('تم حفظ المسودة كمسودة بدون موعد. أضف موعدًا ليدخل المنشور طابور النشر.');
+      toast('تم حفظ المسودة.', 'ok');
+    }
   } catch (e) {
     if (uploadedPath) await deleteMedia(uploadedPath);
     progress(0, false);
@@ -303,6 +319,59 @@ async function saveDraft() {
     uploading = false;
     btn.disabled = false;
   }
+}
+
+/* ---------------------------- طابور النشر ------------------------------- */
+const JOB_STATUS_AR = {
+  queued: 'في الطابور', running: 'جارٍ التنفيذ', published: 'نُشر',
+  failed: 'فشل', blocked: 'بانتظار الحساب', canceled: 'أُلغي'
+};
+const POST_STATUS_AR = {
+  draft: 'مسودة', ready: 'جاهز', scheduled: 'مجدول',
+  publishing: 'قيد النشر', published: 'نُشر', failed: 'فشل'
+};
+
+/**
+ * ينشئ مهمة نشر لكل منصة (عبر REST مباشرة).
+ * السياسة تسمح للمالك بالإدخال فقط عندما يكون المنشور مجدولًا بمستقبل القريب،
+ * والتكرار يُلتقط عبر قيد unique فيفشل بهدوء.
+ * يعيد: 'created' | 'exists' | نص الخطأ
+ */
+async function createPublishJob(postId) {
+  try {
+    const existing = await sbRequest('/rest/v1/publish_jobs?post_id=eq.' +
+      encodeURIComponent(postId) + '&select=id&limit=1');
+    if (existing && existing.length) return 'exists';
+
+    const post = (await sbRequest('/rest/v1/imprint_posts?id=eq.' +
+      encodeURIComponent(postId) + '&select=platforms,owner_id'))[0];
+    if (!post) return 'لم يُعثر على المنشور.';
+
+    await sbRequest('/rest/v1/publish_jobs', {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: post.platforms.map(p => ({
+        owner_id: session.user.id,
+        post_id: postId,
+        platform: p,
+        status: 'queued'
+      }))
+    });
+    return 'created';
+  } catch (e) {
+    return humanError(e);
+  }
+}
+
+/** يجلب حالة مهام النشر لمجموعة منشورات. */
+async function jobsForPosts(ids) {
+  if (!ids.length) return {};
+  const list = ids.map(id => encodeURIComponent(id)).join(',');
+  const rows = await sbRequest('/rest/v1/publish_jobs?post_id=in.(' + list +
+    ')&select=post_id,platform,status,attempts,last_error,external_url&order=platform');
+  const map = {};
+  rows.forEach(r => { (map[r.post_id] = map[r.post_id] || []).push(r); });
+  return map;
 }
 
 /* ------------------------------ فتح المسودة ------------------------------ */
@@ -459,20 +528,57 @@ async function renderSchedule() {
   if (!await ensureSession()) { box.innerHTML = '<p class="empty-note">سجّل الدخول لعرض الجدول.</p>'; return; }
   box.innerHTML = '<p class="empty-note">جارٍ التحميل...</p>';
   try {
-    const rows = await sbRequest('/rest/v1/imprint_posts?select=*&scheduled_at=not.is.null&order=scheduled_at.asc&limit=100');
-    if (!rows.length) {
+    const rows = await sbRequest('/rest/v1/imprint_posts?select=*&order=coalesce(scheduled_at,updated_at).desc&limit=100');
+    const scheduled = rows.filter(r => r.scheduled_at);
+    if (!scheduled.length) {
       box.innerHTML = '<p class="empty-note">لا توجد مواعيد محفوظة. اختر «جدولة لوقت لاحق» ثم احفظ المسودة.</p>';
       return;
     }
-    box.innerHTML = '<p class="banner">هذه مواعيد محفوظة داخل المسودات، وليست جدولة منفّذة. لا يوجد خادم ينشر تلقائيًا بعد.</p>';
+    const jobs = await jobsForPosts(scheduled.map(r => r.id));
+    box.innerHTML = '<p class="banner">كل منصة لها مهمة مستقلة. الحالة «بانتظار الحساب» تعني أن المنصة لم تُربط بعد، ولا يعني ذلك نجاح النشر.</p>';
     const list = document.createElement('div');
     list.className = 'rows';
-    rows.forEach(row => {
-      list.appendChild(makeRow(
-        row.title || 'مسودة بلا عنوان',
-        fmtDate(row.scheduled_at) + ' · ' + ((row.platforms || []).join('، ') || 'بدون منصات'),
-        [makeBtn('فتح', '', () => openDraft(row.id).catch(e => toast(humanError(e), 'err')))]
-      ));
+    scheduled.forEach(row => {
+      const item = document.createElement('div');
+      item.className = 'row';
+      item.style.flexDirection = 'column';
+      item.style.alignItems = 'stretch';
+
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex;justify-content:space-between;gap:10px;align-items:center';
+      const main = document.createElement('div');
+      main.className = 'row-main';
+      const t = document.createElement('strong'); t.textContent = row.title || 'مسودة بلا عنوان';
+      const m = document.createElement('small'); m.className = 'row-meta';
+      m.textContent = fmtDate(row.scheduled_at) + ' · ' + (POST_STATUS_AR[row.status] || row.status);
+      main.append(t, m);
+
+      const acts = document.createElement('div');
+      acts.className = 'row-actions';
+      acts.appendChild(makeBtn('فتح', '', () => openDraft(row.id).catch(e => toast(humanError(e), 'err'))));
+      head.append(main, acts);
+      item.appendChild(head);
+
+      const chips = document.createElement('div');
+      chips.className = 'job-chips';
+      const list2 = jobs[row.id] || [];
+      if (!list2.length) {
+        const s = document.createElement('span');
+        s.className = 'job-chip none';
+        s.textContent = 'لا مهام نشر — أعد الحفظ لإضافتها';
+        chips.appendChild(s);
+      } else {
+        list2.forEach(j => {
+          const c = document.createElement('span');
+          c.className = 'job-chip ' + j.status;
+          c.textContent = j.platform + ' · ' + (JOB_STATUS_AR[j.status] || j.status) +
+            (j.attempts ? ' (' + j.attempts + ')' : '');
+          c.title = j.last_error || j.external_url || '';
+          chips.appendChild(c);
+        });
+      }
+      item.appendChild(chips);
+      list.appendChild(item);
     });
     box.appendChild(list);
   } catch (e) {
