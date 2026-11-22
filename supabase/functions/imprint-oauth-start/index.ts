@@ -34,25 +34,34 @@ async function stateKey(): Promise<CryptoKey> {
   );
 }
 
-/** CORS: نسمح لموقعنا فقط (مع احتياط للمعاينة المحلية). */
-const SITE = Deno.env.get('IMPRINT_SITE_URL') ?? 'https://s20016327.github.io';
-const ALLOWED_ORIGINS = [
-  SITE.replace(/\/+$/, ''),
-  'http://localhost:8080', 'http://127.0.0.1:8080'
-];
+/**
+ * CORS: الترويسة Origin **لا تحتوي مسارًا أبدًا** (‎https://host‎ فقط).
+ * لذلك نقارن الأصل (scheme + host + port) لا العنوان الكامل. كان سماح
+ * `…/Imprint-Studio./` سبب فشل الطلب في المتصفح رغم أن الخادم سليم.
+ */
+const SITE = Deno.env.get('IMPRINT_SITE_URL') ?? 'https://s20016327.github.io/Imprint-Studio./';
+// أصل إضافي مسموح صريح (نطاق بلا مسار) — يسمح بفصل النطاق عن المسار المضيف.
+const EXTRA_ORIGIN = Deno.env.get('IMPRINT_ALLOWED_ORIGIN') ?? '';
+
+function toOrigin(u: string): string {
+  try { return new URL(u).origin; } catch { return ''; }
+}
+
+const ALLOWED_ORIGINS = new Set(
+  [SITE, EXTRA_ORIGIN, 'http://localhost:8080', 'http://127.0.0.1:8080', 'http://localhost:5500']
+    .map(toOrigin)
+    .filter(Boolean) as string[]
+);
 
 function corsFor(req: Request): Record<string, string> {
-  const origin = req.headers.get('origin') ?? '';
-  let allow = ALLOWED_ORIGINS[0];
-  if (origin) {
-    const bare = origin.replace(/\/+$/, '');
-    const hit = ALLOWED_ORIGINS.find(o => bare === o || bare.startsWith(o + '/'));
-    allow = hit ? origin : ALLOWED_ORIGINS[0];
-  }
+  const origin = toOrigin(req.headers.get('origin') ?? '');
+  // لا نُعيد '*' إطلاقًا: نُعيد أصل الطلب إن كان مسموحًا، وإلا الأصل الرسمي.
+  const allow = origin && ALLOWED_ORIGINS.has(origin) ? origin : toOrigin(SITE);
   return {
     'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Max-Age': '600',
     'Vary': 'Origin'
   };
 }
@@ -216,6 +225,14 @@ Deno.serve(async (req) => {
   target.searchParams.set('scope', cfg.scope);
   target.searchParams.set('state', state);
   for (const [k, v] of Object.entries(cfg.extra ?? {})) target.searchParams.set(k, v);
+
+  // الوضع الافتراضي للمتصفح: ردّ JSON يحوي الرابط، ثم يتنقّل العميل بنفسه.
+  // السبب: fetch مع redirect:'manual' يعيد استجابة opaque في المتصفح
+  // (status = 0 وترويسات غير قابلة للقراءة)، فلا يمكن قراءة Location إطلاقًا.
+  const wantsJson = url.searchParams.get('mode') === 'json' || req.method === 'POST';
+  if (wantsJson) {
+    return json(req, { ok: true, platform, authorizeUrl: target.toString() });
+  }
 
   return new Response(null, {
     status: 302,

@@ -58,7 +58,9 @@ curl -X POST "https://yxmetzdoxbqndecslhlu.supabase.co/functions/v1/imprint-publ
 supabase secrets set OAUTH_STATE_SECRET=$(openssl rand -hex 32)
 
 # 2) عنوان الموقع (يُستخدم في إعادة التوجيه بعد الربط)
-supabase secrets set IMPRINT_SITE_URL=https://s20016327.github.io/Imprint-Studio./
+supabase secrets set \\
+  IMPRINT_SITE_URL=https://s20016327.github.io/Imprint-Studio./ \\
+  IMPRINT_ALLOWED_ORIGIN=https://s20016327.github.io
 
 # 3) Instagram Login — لاحظ البادئة INSTAGRAM وليس META
 supabase secrets set \
