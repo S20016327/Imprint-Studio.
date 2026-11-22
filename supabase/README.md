@@ -7,7 +7,8 @@
 ```
 supabase/
 └── functions/
-    └── imprint-publisher/index.ts   عامل النشر (Supabase Edge Function)
+    ├── imprint-publisher/index.ts    عامل النشر المجدول
+    └── imprint-oauth-start/index.ts  بدء ربط حساب منصة (OAuth)
 ```
 
 ## ما هو موجود فعليًا في قاعدة البيانات
@@ -48,6 +49,35 @@ supabase secrets set IMPRINT_CRON_SECRET=<قيمة-عشوائية-طويلة>
 curl -X POST "https://yxmetzdoxbqndecslhlu.supabase.co/functions/v1/imprint-publisher" \
   -H "x-imprint-secret: <القيمة>"
 ```
+
+## ربط الحسابات
+
+```bash
+# 1) سر توقيع state — إلزامي، بدونه ترفض الدالة العمل
+supabase secrets set OAUTH_STATE_SECRET=$(openssl rand -hex 32)
+
+# 2) بيانات تطبيق TikTok المطوّر (عند الحصول عليها)
+supabase secrets set \
+  TIKTOK_CLIENT_ID=... TIKTOK_CLIENT_SECRET=... \
+  TIKTOK_REDIRECT_URI=https://yxmetzdoxbqndecslhlu.supabase.co/functions/v1/imprint-oauth-callback
+
+# 3) أو Meta (Instagram + Facebook)
+supabase secrets set META_CLIENT_ID=... META_CLIENT_SECRET=... META_REDIRECT_URI=...
+
+# 4) أو Google (YouTube)
+supabase secrets set GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GOOGLE_REDIRECT_URI=...
+
+# 5) انشر دالة البدء
+supabase functions deploy imprint-oauth-start --no-verify-jwt
+```
+
+**ما يعمل الآن:** التحقق من هوية المستخدم، توقيع `state` بـHMAC، وبناء رابط
+التفويض الصحيح لكل منصة. **ما لا يزال مطلوبًا:** دالة `imprint-oauth-callback`
+التي تستبدل `code` برمز وصول وتخزّنه في Vault. لم أُنشئها لأنها بلا فائدة قبل
+حصولك على `client_secret` من منصة واحدة على الأقل.
+
+بدون ضبط الأسرار تعيد الدالة **501** برسالة صريحة: «ربط X غير مهيّأ». هذا مقصود:
+لن يُظهر الموقع نجاحًا وهميًا.
 
 ## الجدولة كل دقيقة
 

@@ -13,6 +13,7 @@ const dom = new JSDOM(merged, {
   runScripts: 'dangerously', virtualConsole: vc, url: 'https://x.github.io/p/',
   beforeParse(w) {
     w.URL.createObjectURL = () => 'blob:x'; w.URL.revokeObjectURL = () => {}; w.scrollTo = () => {};
+    w.matchMedia = w.matchMedia || (q => ({ matches:false, media:q, addEventListener(){}, removeEventListener(){}, addListener(){}, removeListener(){} }));
     w.fetch = async (u, o = {}) => {
       const url = String(u), body = o.body;
       calls.push({ url, method: o.method || 'GET', body });

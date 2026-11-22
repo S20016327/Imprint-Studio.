@@ -156,7 +156,12 @@ function toast(message, kind = 'info') {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { box.className = 'toast'; box.hidden = true; }, 6500);
 }
-function status(msg) { const el = $('status'); if (el) el.textContent = msg; }
+function status(msg, kind) {
+  const el = $('status');
+  if (!el) return;
+  el.textContent = msg;
+  if (kind) el.dataset.kind = kind; else delete el.dataset.kind;
+}
 function progress(pct, visible) {
   const wrap = $('progressWrap'), bar = $('progressBar');
   if (!wrap || !bar) return;
@@ -242,6 +247,8 @@ async function saveDraft() {
   const previousPath = loadedPath;
   let uploadedPath = null;
   btn.disabled = true;
+  btn.classList.add('is-busy');
+  btn.setAttribute('aria-busy', 'true');
   uploading = true;
 
   try {
@@ -318,6 +325,9 @@ async function saveDraft() {
   } finally {
     uploading = false;
     btn.disabled = false;
+    btn.classList.remove('is-busy');
+    btn.removeAttribute('aria-busy');
+    if (isSignedIn()) markLinkedPlatforms();
   }
 }
 
@@ -429,7 +439,7 @@ async function openDraft(id) {
   }
   document.querySelectorAll('[data-nav]').forEach(x => x.classList.toggle('active', x.dataset.nav === 'studio'));
   $('crumb').textContent = 'استوديو النشر';
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  smoothScrollTop();
 }
 
 async function deleteDraft(id, title) {
@@ -601,14 +611,39 @@ async function renderStorageSummary() {
 }
 
 /* --------------------------------- اللوحات ------------------------------- */
+let lastFocused = null;
+
 function panelShell(title, subtitle, inner) {
   const c = $('panelContent');
+  const overlay = $('overlay');
+  if (overlay.dataset.open !== 'true') lastFocused = document.activeElement;
+
   c.innerHTML = '<h2 id="modalTitle"></h2>' + (subtitle ? '<p class="panel-sub"></p>' : '') + inner;
   c.querySelector('#modalTitle').textContent = title;
   if (subtitle) c.querySelector('.panel-sub').textContent = subtitle;
-  $('overlay').style.display = 'flex';
+
+  overlay.dataset.open = 'true';
+  document.body.style.overflow = 'hidden';
+  // التركيز على أول عنصر قابل للتفاعل بعد الرسم
+  const focusFirst = () => {
+    const focusable = c.querySelector('input:not([type=hidden]),button,textarea,select,a[href]');
+    const target = focusable || $('closePanel');
+    if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(focusFirst);
+  else setTimeout(focusFirst, 0);
 }
-function closePanel() { const o = $('overlay'); if (o) o.style.display = 'none'; }
+
+function closePanel() {
+  const o = $('overlay');
+  if (!o || o.dataset.open !== 'true') return;
+  o.dataset.open = 'false';
+  document.body.style.overflow = '';
+  if (lastFocused && typeof lastFocused.focus === 'function') {
+    lastFocused.focus({ preventScroll: true });
+  }
+  lastFocused = null;
+}
 
 function openPanel(which) {
   if (which === 'accounts') return renderAccountsPanel();
@@ -617,28 +652,176 @@ function openPanel(which) {
   return renderAccountPanel();
 }
 
+/* ---------------------------- ربط الحسابات ------------------------------ */
+const PLATFORM_META = {
+  TikTok:    { icon: '♪', bg: '#14262b', label: 'TikTok' },
+  Instagram: { icon: '◎', bg: 'linear-gradient(35deg,#e3a13f,#d64278,#8351b1)', label: 'Instagram' },
+  Facebook:  { icon: 'f', bg: '#3374ca', label: 'Facebook' },
+  YouTube:   { icon: '▶', bg: '#df4841', label: 'YouTube' }
+};
+const ACCOUNT_STATUS_AR = {
+  connected: 'متصل', expired: 'انتهت الصلاحية', revoked: 'أُلغي الوصول', error: 'خطأ'
+};
+
+/** يجلب الحسابات المرتبطة للمستخدم الحالي. */
+async function fetchAccounts() {
+  if (!isSignedIn()) return [];
+  try {
+    return await sbRequest('/rest/v1/social_accounts?select=*&order=platform');
+  } catch (e) {
+    // الجدول قد لا يكون موجودًا بعد في مشروع لم يُطبَّق عليه الترحيل
+    if (/does not exist|42P01|not find the table/i.test(e.message)) return [];
+    throw e;
+  }
+}
+
+/**
+ * يبدأ ربط حساب.
+ * الربط الحقيقي يحتاج خادمًا يحمل client_secret، لذلك نوجّه إلى نقطة OAuth
+ * في Supabase Edge Function. إن لم تكن منشورة نُبلّغ بصدق بدل محاكاة النجاح.
+ */
+async function startAccountLink(platform) {
+  const base = SB + '/functions/v1/imprint-oauth-start';
+  const url = base + '?platform=' + encodeURIComponent(platform) +
+    '&origin=' + encodeURIComponent(location.origin + location.pathname);
+  try {
+    const res = await fetch(url, {
+      headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token },
+      redirect: 'manual'
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const to = res.headers.get('location');
+      if (to) { location.href = to; return; }
+    }
+    if (res.status === 404) {
+      toast('خدمة الربط لم تُنشر بعد على الخادم. المطلوب تطبيق مطوّر معتمد.', 'warn');
+      return;
+    }
+    const text = await res.text();
+    let msg = text;
+    try { msg = JSON.parse(text).error || text; } catch {}
+    toast('تعذر بدء الربط: ' + humanError(msg), 'err');
+  } catch {
+    toast('خدمة الربط غير متاحة بعد. تحتاج نشر Edge Function وتطبيق مطوّر.', 'warn');
+  }
+}
+
+async function unlinkAccount(id, platform) {
+  if (!confirm('فصل حساب ' + platform + '؟ ستتوقف مهام النشر لهذه المنصة.')) return;
+  try {
+    await sbRequest('/rest/v1/social_accounts?id=eq.' + encodeURIComponent(id), { method: 'DELETE' });
+    toast('تم فصل حساب ' + platform + '.', 'ok');
+    renderAccountsPanel();
+    refreshAccountsBadge();
+  } catch (e) {
+    toast('تعذر الفصل: ' + humanError(e), 'err');
+  }
+}
+
+/** شارة عدد الحسابات في القائمة الجانبية. */
+async function refreshAccountsBadge() {
+  const badge = $('accountsBadge');
+  if (!badge) return;
+  if (!isSignedIn()) { badge.hidden = true; return; }
+  try {
+    const accounts = await fetchAccounts();
+    const n = accounts.filter(a => a.status === 'connected').length;
+    badge.hidden = n === 0;
+    badge.textContent = String(n);
+    badge.setAttribute('aria-label', n + ' حسابات مرتبطة');
+  } catch { badge.hidden = true; }
+}
+
+/** يعلّم المنصات المرتبطة في قسم اختيار المنصات. */
+async function markLinkedPlatforms() {
+  if (!isSignedIn()) return;
+  try {
+    const accounts = await fetchAccounts();
+    const linked = new Set(accounts.filter(a => a.status === 'connected').map(a => a.platform));
+    document.querySelectorAll('.platform').forEach(p => {
+      const dot = p.querySelector('.linked-dot');
+      const small = p.querySelector('small');
+      const on = linked.has(p.dataset.name);
+      if (dot) dot.className = 'linked-dot' + (on ? '' : ' off');
+      if (small) small.textContent = on ? 'مرتبط' : 'غير مرتبط';
+    });
+  } catch { /* غير حرج */ }
+}
+
 function renderAccountsPanel() {
-  panelShell('حساباتك في مكان واحد',
-    'الربط الفعلي غير مفعّل بعد: يحتاج خادمًا آمنًا يخزّن رموز الوصول، ولا يمكن تخزينها في صفحة ثابتة.',
-    '<div class="hint-box">لا يوجد حاليًا أي حساب مرتبط. ما يلزم لكل منصة قبل التفعيل:</div>');
-  const rows = [
-    ['TikTok', 'تطبيق مطوّر ومعتمد في TikTok for Developers ثم OAuth ومراجعة المحتوى.'],
-    ['Instagram', 'حساب أعمال مربوط بصفحة Facebook وتطبيق Meta ومُراجَعة صلاحيات النشر.'],
-    ['Facebook', 'تطبيق Meta وصلاحيات pages_manage_posts ومراجعة App Review.'],
-    ['YouTube', 'مشروع Google Cloud وتفعيل YouTube Data API وحصة نشر كافية.']
-  ];
-  const c = $('panelContent');
-  rows.forEach(([name, need]) => {
-    const div = document.createElement('div');
-    div.className = 'account-row';
-    const info = document.createElement('div');
-    const s = document.createElement('strong'); s.textContent = name;
-    const small = document.createElement('small'); small.textContent = 'غير مرتبط';
-    const needEl = document.createElement('small'); needEl.className = 'need'; needEl.textContent = need;
-    info.append(s, small, needEl);
-    const pill = document.createElement('span'); pill.className = 'pill'; pill.textContent = 'قيد التطوير';
-    div.append(info, pill);
-    c.appendChild(div);
+  if (!isSignedIn()) {
+    panelShell('الحسابات المرتبطة', 'سجّل الدخول أولًا لعرض حساباتك وربط منصاتك.',
+      '<button class="primary" id="goLogin" type="button">تسجيل الدخول</button>');
+    $('goLogin').onclick = () => renderAccountPanel();
+    return;
+  }
+
+  panelShell('الحسابات المرتبطة',
+    'الربط يجري عبر خدمة آمنة على الخادم تحفظ رموز الوصول مشفّرة. لا تُخزَّن أي رموز في المتصفح.',
+    '<div id="accList"><p class="empty-note">جارٍ التحميل...</p></div>' +
+    '<div class="hint-box" id="accNote"></div>');
+
+  fetchAccounts().then(accounts => {
+    const list = $('accList');
+    if (!list) return;
+    list.innerHTML = '';
+
+    Object.keys(PLATFORM_META).forEach(platform => {
+      const meta = PLATFORM_META[platform];
+      const acc = accounts.find(a => a.platform === platform);
+      const div = document.createElement('div');
+      div.className = 'account-row';
+
+      const info = document.createElement('div');
+      const title = document.createElement('strong');
+      const ico = document.createElement('span');
+      ico.className = 'account-ico';
+      ico.style.background = meta.bg;
+      ico.textContent = meta.icon;
+      title.append(ico, document.createTextNode(meta.label));
+
+      const state = document.createElement('small');
+      state.textContent = acc
+        ? (ACCOUNT_STATUS_AR[acc.status] || acc.status) +
+          (acc.display_name ? ' · ' + acc.display_name : '') +
+          (acc.expires_at ? ' · ينتهي ' + fmtDate(acc.expires_at) : '')
+        : 'غير مرتبط';
+
+      const need = document.createElement('small');
+      need.className = 'need';
+      need.textContent = acc
+        ? (acc.last_error || 'جاهز لاستقبال مهام النشر عند تفعيل المنصة.')
+        : ({
+            TikTok: 'يلزم تطبيق مطوّر معتمد من TikTok for Developers.',
+            Instagram: 'يلزم حساب أعمال مربوط بصفحة Facebook وتطبيق Meta.',
+            Facebook: 'يلزم تطبيق Meta مع صلاحية pages_manage_posts.',
+            YouTube: 'يلزم مشروع Google Cloud مع YouTube Data API.'
+          })[platform];
+
+      info.append(title, state, need);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'connect-btn' + (acc ? ' unlink' : '');
+      btn.textContent = acc ? 'فصل' : 'ربط';
+      btn.onclick = () => acc ? unlinkAccount(acc.id, platform) : startAccountLink(platform);
+
+      div.append(info, btn);
+      list.appendChild(div);
+    });
+
+    const connected = accounts.filter(a => a.status === 'connected').length;
+    const note = $('accNote');
+    if (note) {
+      note.textContent = connected
+        ? 'لديك ' + connected + ' حساب مرتبط. النشر الفعلي يبدأ بعد تفعيل محوّل المنصة على الخادم.'
+        : 'لا يوجد حساب مرتبط بعد. زر «ربط» يفتح شاشة المنصة الرسمية لإعطاء الصلاحية.';
+    }
+    refreshAccountsBadge();
+    markLinkedPlatforms();
+  }).catch(e => {
+    const list = $('accList');
+    if (list) list.innerHTML = '<p class="empty-note">تعذر تحميل الحسابات: ' + humanError(e) + '</p>';
   });
 }
 
@@ -695,7 +878,9 @@ function renderAccountPanel() {
       persistSession(d);
       closePanel();
       toast('تم تسجيل الدخول بنجاح.', 'ok');
-      status('تم تسجيل الدخول. يمكنك الآن حفظ المسودات وفتحها.');
+      status('تم تسجيل الدخول. يمكنك الآن حفظ المسودات وفتحها.', 'ok');
+      refreshAccountsBadge();
+      markLinkedPlatforms();
     } catch (err) {
       out.textContent = 'تعذر الدخول: ' + humanError(err);
       btn.disabled = false;
@@ -703,9 +888,41 @@ function renderAccountPanel() {
   };
 }
 
+/* ------------------------------- المظهر --------------------------------- */
+const THEME_KEY = 'imprint-theme';
+
+function applyTheme(theme, persist) {
+  document.documentElement.dataset.theme = theme;
+  const btn = $('themeBtn'), label = $('themeBtnLabel');
+  const dark = theme === 'dark';
+  if (btn) btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
+  if (label) label.textContent = dark ? 'تفعيل الوضع الفاتح' : 'تفعيل الوضع الداكن';
+  if (btn) btn.title = dark ? 'الوضع الفاتح' : 'الوضع الداكن';
+  try { if (persist) localStorage.setItem(THEME_KEY, theme); } catch {}
+}
+
+function initTheme() {
+  const current = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+  applyTheme(current, false);
+  const btn = $('themeBtn');
+  if (btn) {
+    btn.onclick = () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      applyTheme(next, true);
+    };
+  }
+}
+
+/** تمرير سلس يحترم تفضيل تقليل الحركة. */
+function smoothScrollTop() {
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+}
+
 /* --------------------------------- التمهيد ------------------------------- */
 function boot() {
   restoreSession();
+  initTheme();
 
   let toastBox = $('toast');
   if (!toastBox) {
@@ -725,9 +942,14 @@ function boot() {
   document.querySelectorAll('[data-nav]').forEach(b => {
     b.onclick = () => {
       const which = b.dataset.nav;
-      document.querySelectorAll('[data-nav]').forEach(x => x.classList.toggle('active', x === b));
+      document.querySelectorAll('[data-nav]').forEach(x => {
+        const on = x === b;
+        x.classList.toggle('active', on);
+        if (on) x.setAttribute('aria-current', 'page');
+        else x.removeAttribute('aria-current');
+      });
       $('crumb').textContent = b.querySelector('.text').textContent;
-      if (which === 'studio') { closePanel(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+      if (which === 'studio') { closePanel(); smoothScrollTop(); return; }
       openPanel(which);
     };
   });

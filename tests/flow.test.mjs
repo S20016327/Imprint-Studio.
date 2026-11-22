@@ -11,7 +11,7 @@ const calls = [];
 let mode = 'ok';
 
 const vc = new VirtualConsole();
-vc.on('jsdomError', e => errors.push('jsdomError: ' + e.message));
+vc.on('jsdomError', e => { if (!/scrollTo/.test(e.message)) errors.push('jsdomError: ' + e.message); });
 vc.on('error', (...a) => errors.push('console.error: ' + a.join(' ')));
 
 const dom = new JSDOM(merged, {
@@ -44,12 +44,14 @@ const dom = new JSDOM(merged, {
       if (u.includes('/rest/v1/imprint_posts') && opts.method === 'POST')
         return json([{ id: 'aaaaaaaa-2222-4333-8444-555555555555', ...JSON.parse(body) }]);
       if (u.includes('/rest/v1/imprint_posts') && u.includes('id=eq.')) return json([{ media_path: null, ...JSON.parse(body || '{}') }]);
+      if (u.includes('/rest/v1/social_accounts')) return json([]);
       if (u.includes('/rest/v1/imprint_posts')) return json([{ id: 'p1', title: 'T', platforms: ['TikTok'],
           media_path: null, status: 'draft', updated_at: new Date().toISOString(), scheduled_at: null, owner_id: 'x' }]);
       return json({});
     };
     w.URL.createObjectURL = () => 'blob:fake';
     w.URL.revokeObjectURL = () => {};
+    w.matchMedia = w.matchMedia || (q => ({ matches:false, media:q, addEventListener(){}, removeEventListener(){}, addListener(){}, removeListener(){} }));
   }
 });
 
@@ -82,7 +84,7 @@ const submit = el => el.dispatchEvent(new w.Event('submit', { bubbles: true, can
   $('email').value = 'owner@example.com'; $('password').value = 'right';
   submit($('loginform')); await tick(150);
   check('signed in label', $('accountLabel').textContent === 'owner@example.com', $('accountLabel').textContent);
-  check('panel closed', $('overlay').style.display === 'none');
+  check('panel closed', $('overlay').dataset.open === 'false');
 
   $('draft').click(); await tick(80);
   check('blocked without title', /عنوان/.test($('status').textContent), $('status').textContent);
@@ -116,8 +118,11 @@ const submit = el => el.dispatchEvent(new w.Event('submit', { bubbles: true, can
   w.openPanel('schedule'); await tick(200);
   check('empty schedule note', /لا توجد مواعيد/.test($('scheduleList').textContent));
 
-  w.openPanel('accounts'); await tick(80);
-  check('4 platform rows', qa('#panelContent .account-row').length === 4);
+  w.openPanel('accounts'); await tick(220);
+  check('4 platform rows', qa('#panelContent .account-row').length === 4,
+    String(qa('#panelContent .account-row').length));
+  check('accounts show link buttons', qa('#panelContent .connect-btn').length === 4);
+  check('accounts note present', !!$('accNote'));
 
   w.openPanel('account'); await tick(120);
   check('account panel shows email', $('signedEmail') && $('signedEmail').textContent === 'owner@example.com');
