@@ -5,7 +5,7 @@
   "description": "بصمة إبداع | Imprint Creative — استوديو تجهيز وحفظ منشورات الصور والفيديو",
   "type": "module",
   "scripts": {
-    "test": "node tests/check-html.mjs && node tests/design.test.mjs && node tests/flow.test.mjs && node tests/media.test.mjs && node tests/jobs.test.mjs && node tests/accounts.test.mjs && node tests/manual-publish.test.mjs && node tests/publish-now.test.mjs && node tests/tiktok.test.mjs && node tests/facebook.test.mjs",
+    "test": "node tests/check-html.mjs && node tests/design.test.mjs && node tests/flow.test.mjs && node tests/media.test.mjs && node tests/jobs.test.mjs && node tests/accounts.test.mjs && node tests/manual-publish.test.mjs && node tests/publish-now.test.mjs && node tests/tiktok.test.mjs && node tests/facebook.test.mjs && node tests/facebook-caption.test.mjs",
     "serve": "python3 -m http.server 8080 --bind 0.0.0.0"
   },
   "devDependencies": {

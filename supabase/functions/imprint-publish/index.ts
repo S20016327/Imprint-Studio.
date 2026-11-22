@@ -12,7 +12,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 const URL_ = Deno.env.get('SUPABASE_URL')!;
 const KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const SECRET = Deno.env.get('IMPRINT_WORKER_SECRET') ?? '';
-const WORKER = 'imprint-publish-v3';
+const WORKER = 'imprint-publish-v6';
 const V = 'v26.0';
 
 const admin = createClient(URL_, KEY, { auth: { persistSession: false } });
@@ -96,16 +96,48 @@ async function instagram(p: any, c: Creds) {
 
 async function facebook(p: any, c: Creds) {
   const base = 'https://graph.facebook.com/' + V;
-  // النشر بصفة الصفحة برمز الصفحة هو المسار الموثَّق. رمز المستخدم يعمل
-  // أحيانًا فقط فيُنتج فشلًا متقطعًا بلا سبب واضح — لذلك نُقدّمه لو وُجد.
+  // النشر بصفة الصفحة برمز الصفحة هو المسار الموثَّق.
   const token = c.refresh_token || c.access_token;
-  const params = new URLSearchParams({ access_token: token, description: caption(p) });
-  params.set(isVideo(p) ? 'file_url' : 'url', await mediaUrl(p.media_path));
-  const ep = base + '/' + c.external_account_id + (isVideo(p) ? '/videos' : '/photos');
+  const text = caption(p);
+  const video = isVideo(p);
+
+  // ⚠️ المعامل يختلف بين النقطتين، وهذا خطأ حقيقي وقع:
+  //   /photos يقبل message (أو caption) — وليس description
+  //   /videos يقبل description + title
+  // إرسال description إلى /photos يُتجاهل بصمت: تُنشر الصورة بلا نص
+  // ويأتي الرد 200 كأن كل شيء نجح. لذلك نفصل الجسم بحسب النوع.
+  const params = new URLSearchParams({ access_token: token });
+
+  if (video) {
+    params.set('file_url', await mediaUrl(p.media_path));
+    if (text) {
+      params.set('description', text);
+      params.set('title', String(p.title ?? 'منشور').slice(0, 100));
+    }
+  } else {
+    params.set('url', await mediaUrl(p.media_path));
+    if (text) params.set('message', text); // ← المعامل الصحيح للصور
+  }
+
+  const ep = base + '/' + c.external_account_id + (video ? '/videos' : '/photos');
   const r = await fetch(ep, { method: 'POST', body: params });
   const d = await r.json();
-  if (!r.ok || d.error) throw new Error('فيسبوك رفض النشر: ' + (d?.error?.message ?? r.status));
-  const id = String(d.id ?? d.post_id ?? '');
+  if (!r.ok || d.error) {
+    const m = String(d?.error?.message ?? r.status);
+    if (/permission|\(#10\)|\(#200\)/i.test(m)) {
+      throw new Blocked(
+        'فيسبوك رفض النشر لعدم امتلاك صلاحية إنشاء محتوى على الصفحة. ' +
+        'تأكد أن الرمز يحمل pages_manage_posts وأنك مسؤول في الصفحة. التفصيل: ' + m
+      );
+    }
+    throw new Error('فيسبوك رفض النشر: ' + m);
+  }
+
+  // /photos يُعيد id (الصورة) و post_id (المنشور). الرابط الصحيح للمنشور
+  // هو post_id — الرابط بالـ id يفتح الصورة لا المنشور.
+  const postId = String(d.post_id ?? '');
+  const id = postId || String(d.id ?? '');
+
   return { external_post_id: id, external_url: id ? 'https://www.facebook.com/' + id : null };
 }
 
