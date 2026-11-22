@@ -52,7 +52,11 @@ async function graph(token: string, path: string) {
  * ما يستطيعه رمز فيسبوك. نسأل /debug_token عن الصلاحيات الحقيقية،
  * ثم نسأل عن مهام الصفحة — لأن الصلاحية وحدها لا تكفي بلا CREATE_CONTENT.
  */
-async function facebookCaps(token: string, pageId: string): Promise<Caps> {
+async function facebookCaps(
+  token: string,
+  pageId: string,
+  storedScopes: string[] = [],
+): Promise<Caps> {
   const caps: Caps = {
     post: { ok: false, reason_ar: 'لم يُتحقق بعد.' },
     reel: { ok: false, reason_ar: 'لم يُتحقق بعد.' },
@@ -60,9 +64,16 @@ async function facebookCaps(token: string, pageId: string): Promise<Caps> {
     cover: { ok: false, reason_ar: 'لم يُتحقق بعد.' },
   };
 
-  // رمز المستخدم نفسه يكشف صلاحياته؛ رمز الصفحة يكشف صلاحيات الصفحة.
+  // ⚠️ قيد حقيقي وقعنا فيه: /debug_token يرفض **رمز الصفحة** بالخطأ
+  //   (#100) You must provide an app access token, or a user access token
+  // والرمز المحفوظ بعد الربط هو رمز صفحة. الاعتماد عليه وحده كان سيُبلّغ
+  // «غير ممكن» لكل شيء — أي منع نشر يعمل فعلًا. لذلك:
+  //   ① جرّب debug_token (يعمل مع رمز مستخدم).
+  //   ② إن فشل، استخدم الصلاحيات المسجّلة وقت الربط من Graph + وصولًا حيًّا للصفحة.
   const dbg = await graph(token, `debug_token?input_token=${encodeURIComponent(token)}`);
-  const granted: string[] = dbg.body?.data?.scopes ?? [];
+  const dbgScopes: string[] | null = Array.isArray(dbg.body?.data?.scopes) ? dbg.body.data.scopes : null;
+  const usedStored = !dbgScopes;
+  const granted: string[] = dbgScopes ?? storedScopes;
 
   // للصفحة: نقرأ الصورة والغلاف القابلين للقراءة، وهذا يثبت الرمز والوصول.
   const page = await graph(token, `${pageId}?fields=id,name,picture,cover`);
@@ -81,9 +92,13 @@ async function facebookCaps(token: string, pageId: string): Promise<Caps> {
     return caps;
   }
 
+  const how = usedStored
+    ? ' — المصدر: الصلاحيات المسجّلة وقت الربط + وصول حيّ للصفحة الآن (فحص الرمز المباشر غير متاح لرمز الصفحة).'
+    : '';
+
   // المنشور العادي: يحتاج pages_manage_posts (يكفي لمنشور الصورة/الفيديو العادي)
   caps.post = canAdmin
-    ? { ok: true, reason_ar: 'ممكن: الرمز يحمل pages_manage_posts ووصل إلى الصفحة فعليًا.' }
+    ? { ok: true, reason_ar: 'ممكن: الرمز يحمل pages_manage_posts ووصل إلى الصفحة فعليًا.' + how }
     : {
         ok: false,
         needs: ['pages_manage_posts'],
@@ -96,8 +111,8 @@ async function facebookCaps(token: string, pageId: string): Promise<Caps> {
     ? {
         ok: true,
         reason_ar: canRead
-          ? 'ممكن: الرمز يحمل pages_manage_posts وpages_read_engagement.'
-          : 'ممكن غالبًا: الرمز يحمل pages_manage_posts. توثيق Meta يطلب pages_read_engagement أيضًا — إن رُفض الرفع فأضفها.',
+          ? 'ممكن: الرمز يحمل pages_manage_posts وpages_read_engagement.' + how
+          : 'ممكن غالبًا: الرمز يحمل pages_manage_posts. توثيق Meta يطلب pages_read_engagement أيضًا — إن رُفض الرفع فأضفها.' + how,
       }
     : {
         ok: false,
@@ -107,7 +122,7 @@ async function facebookCaps(token: string, pageId: string): Promise<Caps> {
 
   // صورة الصفحة: مسار /picture يقبلها عمليًا برمز الصفحة.
   caps.picture = canAdmin
-    ? { ok: true, reason_ar: 'ممكن: الرمز يحمل pages_manage_posts ويستطيع تعديل صورة الصفحة.' }
+    ? { ok: true, reason_ar: 'ممكن: الرمز يحمل pages_manage_posts ويستطيع تعديل صورة الصفحة.' + how }
     : {
         ok: false,
         needs: ['pages_manage_posts', 'pages_manage_metadata'],
@@ -146,7 +161,16 @@ async function credsFor(ownerId: string, platform: string) {
   if (!row?.access_token) {
     return { error: 'لا يوجد حساب ' + platform + ' مرتبط. اربط الحساب أولًا من «الحسابات المرتبطة».' };
   }
-  return { row };
+  // الصلاحيات المسجّلة وقت الربط — احتياطي موثوق عند تعذّر debug_token.
+  const { data: acc } = await admin
+    .from('social_accounts')
+    .select('scopes')
+    .eq('owner_id', ownerId)
+    .eq('platform', platform)
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  const scopes: string[] = Array.isArray(acc) && acc[0]?.scopes ? acc[0].scopes : [];
+  return { row, scopes };
 }
 
 Deno.serve(async (req) => {
@@ -187,7 +211,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const caps = await facebookCaps(c.row.access_token, c.row.external_account_id);
+    const caps = await facebookCaps(c.row.access_token, c.row.external_account_id, c.scopes ?? []);
     return json({
       ok: true,
       build: BUILD,
@@ -238,7 +262,7 @@ Deno.serve(async (req) => {
     if (post.publish_format === 'reel' && platforms.includes('Facebook')) {
       const c = await credsFor(user.id, 'Facebook');
       if (!('error' in c)) {
-        const caps = await facebookCaps(c.row.access_token, c.row.external_account_id);
+        const caps = await facebookCaps(c.row.access_token, c.row.external_account_id, c.scopes ?? []);
         if (!caps.reel.ok) {
           return json(
             {

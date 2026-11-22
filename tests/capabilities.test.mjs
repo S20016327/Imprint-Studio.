@@ -15,6 +15,17 @@ check('capabilities come from Graph, not a hardcoded table',
   /debug_token/.test(brand) && /granted/.test(brand),
   'permissions are asserted without asking Meta');
 
+// عيب حقيقي وقع: /debug_token يرفض رمز الصفحة، والمحفوظ هو رمز صفحة.
+// الاعتماد عليه وحده كان يُبلّغ «غير ممكن» لكل شيء — أي منع نشر يعمل.
+check('page tokens are handled: stored scopes are the documented fallback',
+  /dbgScopes \?\? storedScopes/.test(brand),
+  'a page token would make debug_token fail and every capability read false');
+check('the fallback is passed in from social_accounts',
+  /c\.scopes \?\? \[\]/.test(brand) && /\.select\('scopes'\)/.test(brand));
+check('the UI is told when scopes came from storage, not a live probe',
+  /فحص الرمز المباشر غير متاح لرمز الصفحة/.test(brand),
+  'a stored-scope answer is presented as a live probe');
+
 check('reachability of the Page is actually tested',
   /fields=id,name,picture,cover/.test(brand),
   'a token that cannot see the Page would still report success');
