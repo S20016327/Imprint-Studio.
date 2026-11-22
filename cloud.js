@@ -399,8 +399,9 @@ async function createPublishJob(postId) {
 async function jobsForPosts(ids) {
   if (!ids.length) return {};
   const list = ids.map(id => encodeURIComponent(id)).join(',');
+  // ‏id مطلوب: بدونه لا يمكن تسجيل نتيجة نشر لمهمة بعينها
   const rows = await sbRequest('/rest/v1/publish_jobs?post_id=in.(' + list +
-    ')&select=post_id,platform,status,attempts,last_error,external_url&order=platform');
+    ')&select=id,post_id,platform,status,attempts,last_error,external_url&order=platform');
   const map = {};
   rows.forEach(r => { (map[r.post_id] = map[r.post_id] || []).push(r); });
   return map;
@@ -588,8 +589,27 @@ async function renderSchedule() {
       const acts = document.createElement('div');
       acts.className = 'row-actions';
       acts.appendChild(makeBtn('فتح', '', () => openDraft(row.id).catch(e => toast(humanError(e), 'err'))));
+
+      // كل منصة في المنشور لها زر «نسخ للصفحة» — نشر يدوي حقيقي بلا API
+      (row.platforms || []).forEach(platform => {
+        const label = MANUAL_TARGETS[platform] ? MANUAL_TARGETS[platform].label : platform;
+        acts.appendChild(makeBtn(
+          'نسخ إلى ' + label,
+          'ghost',
+          () => copyToPlatform(row, platform).catch(e => toast(humanError(e), 'err'))
+        ));
+        acts.appendChild(makeBtn(
+          'تم النشر على ' + label,
+          'ok-mini',
+          () => markPublished(row, platform)
+        ));
+      });
+
       head.append(main, acts);
       item.appendChild(head);
+
+      row.__jobIds = {};
+      (jobs[row.id] || []).forEach(j => { row.__jobIds[j.platform] = j.id; });
 
       const chips = document.createElement('div');
       chips.className = 'job-chips';
@@ -984,6 +1004,126 @@ async function openTokenBox(row, platform) {
 
   row.appendChild(box);
   input.focus({ preventScroll: true });
+}
+
+/** حافظة نصية مع بديل للمتصفحات التي تمنع Clipboard API. */
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* نكمل بالبديل */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
+}
+
+/** نص المنشور الجاهز للّصق: العنوان + الوصف + الوسوم. */
+function captionOf(row) {
+  return [row.title, row.description, row.hashtags]
+    .map(x => (x || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/**
+ * وجهة النشر اليدوي لكل منصة.
+ * نفتح الصفحة الرسمية للمستخدم المسجّل دخوله — هو يلصق النص ويرفع الملف.
+ * لا نقرأ كوكيز المتصفح ولا ننتحل جلسته: هذا غير ممكن تقنيًا ودون إذن صريح.
+ */
+const MANUAL_TARGETS = {
+  TikTok:    { url: 'https://www.tiktok.com/tiktokstudio/upload', label: 'TikTok Studio' },
+  Instagram: { url: 'https://www.instagram.com/', label: 'Instagram' },
+  Facebook:  { url: 'https://www.facebook.com/', label: 'Facebook' },
+  YouTube:   { url: 'https://studio.youtube.com/', label: 'YouTube Studio' }
+};
+
+/** ينزّل ملف المسودة ليتمكن المستخدم من رفعه في صفحة المنصة. */
+async function downloadDraftMedia(row) {
+  if (!row.media_path) return false;
+  try {
+    const blob = await sbRequest(downloadUrl(row.media_path), { raw: true });
+    const ext = (row.media_path.split('.').pop() || 'bin').toLowerCase();
+    const name = (row.title || 'imprint').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 60) + '.' + ext;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return true;
+  } catch (e) {
+    toast('تعذر تنزيل الملف: ' + humanError(e), 'err');
+    return false;
+  }
+}
+
+/**
+ * «نسخ للصفحة»: ينسخ النص، ينزّل الملف، ويفتح صفحة المنصة.
+ * ثلاث خطوات في نقرة واحدة، بلا أي وصول برمجي لحسابك.
+ */
+async function copyToPlatform(row, platform) {
+  const text = captionOf(row);
+  const copied = text ? await copyText(text) : false;
+  const target = MANUAL_TARGETS[platform] || { url: 'https://www.instagram.com/', label: platform };
+
+  let msg = [];
+  msg.push(copied ? 'تم نسخ النص' : 'تعذر النسخ — انسخه من مسودة المنشور');
+  if (await downloadDraftMedia(row)) msg.push('ونُزّل الملف');
+  window.open(target.url, '_blank', 'noopener');
+
+  toast(msg.join(' ') + '. افتح ' + target.label + ' والصق النص وارفع الملف.', 'ok');
+  status(msg.join(' ') + '. الصق في ' + target.label + ' (Ctrl+V) وارفع الملف — ثم اضغط «تم النشر» لتسجيل النتيجة.', 'ok');
+}
+
+/**
+ * يسجّل أن المستخدم نشر يدويًا على منصة بعينها.
+ * هذا لا يدّعي أن الخادم نشر: نكتب النتيجة كما شاهدها المستخدم.
+ */
+async function markPublished(row, platform) {
+  try {
+    const jobId = row.__jobIds && row.__jobIds[platform];
+    if (jobId) {
+      await sbRequest('/rest/v1/publish_jobs?id=eq.' + encodeURIComponent(jobId), {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: {
+          status: 'published',
+          finished_at: new Date().toISOString(),
+          last_error: null
+        }
+      });
+    }
+
+    // إن نُشرت كل منصات المنشور نحدّث حالة المنشور نفسه
+    const rows = await sbRequest('/rest/v1/publish_jobs?post_id=eq.' +
+      encodeURIComponent(row.id) + '&select=platform,status');
+    const all = (row.platforms || []).every(p => {
+      const j = rows.find(r => r.platform === p);
+      return !j || j.status === 'published';
+    });
+    await sbRequest('/rest/v1/imprint_posts?id=eq.' + encodeURIComponent(row.id), {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: { status: all ? 'published' : 'publishing' }
+    });
+
+    toast('سُجّل النشر على ' + platform + '.', 'ok');
+    status('سُجّل النشر على ' + platform + '. الحالة الآن تعكس ما حدث فعلًا.');
+    renderSchedule();
+  } catch (e) {
+    toast('تعذر تسجيل النشر: ' + humanError(e), 'err');
+  }
 }
 
 function renderAccountsPanel() {
