@@ -7,9 +7,10 @@
 //
 //  المتغيرات المطلوبة في بيئة الدالة (Supabase Secrets):
 //    OAUTH_STATE_SECRET   سر عشوائي طويل لتوقيع state (منع CSRF/إعادة الاستخدام)
-//    TIKTOK_CLIENT_ID / TIKTOK_CLIENT_SECRET / TIKTOK_REDIRECT_URI      (اختياري)
-//    META_CLIENT_ID   / META_CLIENT_SECRET   / META_REDIRECT_URI        (اختياري)
-//    GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI      (اختياري)
+//    TIKTOK_CLIENT_ID    / TIKTOK_CLIENT_SECRET    / TIKTOK_REDIRECT_URI      (اختياري)
+//    INSTAGRAM_CLIENT_ID / INSTAGRAM_CLIENT_SECRET / INSTAGRAM_REDIRECT_URI   (اختياري)
+//    META_CLIENT_ID      / META_CLIENT_SECRET      / META_REDIRECT_URI        (اختياري)
+//    GOOGLE_CLIENT_ID    / GOOGLE_CLIENT_SECRET    / GOOGLE_REDIRECT_URI      (اختياري)
 //
 //  لا تعمل المنصة إلا إذا كانت متغيراتها مضبوطة فعليًا. الغياب ليس خطأً صامتًا:
 //  تعيد الدالة 501 برسالة واضحة بدل محاكاة ربط وهمي.
@@ -68,7 +69,21 @@ function providerConfig(platform: string): Provider | null {
         extra: { response_type: 'code' }
       };
     }
-    case 'Instagram':
+    // Instagram عبر "Instagram Login": لا يحتاج صفحة Facebook، لكنه يحتاج
+    // حسابًا احترافيًا (Business/Creator) — الحسابات الشخصية لا تدعم النشر أصلًا.
+    // مضيف التفويض هو instagram.com، وليس facebook.com، والـscopes مختلفة تمامًا.
+    case 'Instagram': {
+      const clientId = env('INSTAGRAM_CLIENT_ID');
+      if (!clientId) return null;
+      return {
+        authorizeUrl: 'https://www.instagram.com/oauth/authorize',
+        clientId,
+        redirectUri: env('INSTAGRAM_REDIRECT_URI'),
+        scope: 'instagram_business_basic,instagram_business_content_publish',
+        extra: { response_type: 'code', enable_fb_login: '0', force_authentication: '1' }
+      };
+    }
+    // Facebook Login للمنشورات على الصفحات (منفصل عن Instagram)
     case 'Facebook': {
       const clientId = env('META_CLIENT_ID');
       if (!clientId) return null;
@@ -76,9 +91,7 @@ function providerConfig(platform: string): Provider | null {
         authorizeUrl: 'https://www.facebook.com/v21.0/dialog/oauth',
         clientId,
         redirectUri: env('META_REDIRECT_URI'),
-        scope: platform === 'Instagram'
-          ? 'instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement'
-          : 'pages_manage_posts,pages_read_engagement,pages_show_list'
+        scope: 'pages_manage_posts,pages_read_engagement,pages_show_list'
       };
     }
     case 'YouTube': {

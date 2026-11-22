@@ -919,10 +919,40 @@ function smoothScrollTop() {
   window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
 }
 
+/** يقرأ نتيجة العودة من OAuth ويعرضها بصدق، ثم ينظّف العنوان. */
+function handleOAuthReturn() {
+  const params = new URLSearchParams(location.search);
+  const linked = params.get('linked');
+  if (!linked) return false;
+
+  // أزل المعاملات من العنوان حتى لا تتكرر الرسالة عند التحديث
+  const clean = location.pathname + location.hash;
+  history.replaceState({}, '', clean);
+
+  if (linked === 'ok') {
+    toast('تم ربط حساب ' + (params.get('platform') || '') + ' بنجاح. ✅', 'ok');
+    status('تم ربط الحساب. الرمز محفوظ مشفّرًا على الخادم ولا يصل إلى المتصفح.', 'ok');
+  } else {
+    const reasons = {
+      invalid_state: 'انتهت صلاحية طلب الربط أو أنه غير موثوق. أعد المحاولة من الزر.',
+      missing_code: 'لم تُرجع المنصة رمز التفويض. ربما أُلغي الطلب.',
+      server_misconfigured: 'إعداد الخادم ناقص (OAUTH_STATE_SECRET).',
+      access_denied: 'رُفض طلب الصلاحية على المنصة.',
+      user_denied: 'رُفض طلب الصلاحية على المنصة.'
+    };
+    const reason = params.get('reason') || '';
+    toast('تعذر الربط: ' + (reasons[reason] || reason || 'سبب غير معروف'),
+      'err');
+    status('تعذر إكمال الربط. ' + (reasons[reason] || reason), 'err');
+  }
+  return true;
+}
+
 /* --------------------------------- التمهيد ------------------------------- */
 function boot() {
   restoreSession();
   initTheme();
+  const fromOAuth = handleOAuthReturn();
 
   let toastBox = $('toast');
   if (!toastBox) {
@@ -958,8 +988,11 @@ function boot() {
   $('newDraft').onclick = () => newDraft();
 
   if (isSignedIn()) {
-    status('مرحبًا بعودتك، ' + session.user.email + '.');
+    if (!fromOAuth) status('مرحبًا بعودتك، ' + session.user.email + '.');
     ensureSession();
+    refreshAccountsBadge();
+    markLinkedPlatforms();
+    if (fromOAuth) openPanel('accounts');
   }
 
   // تجديد هادئ للجلسة قبل انتهاء صلاحيتها
