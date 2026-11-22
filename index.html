@@ -636,6 +636,41 @@ body[data-signed="1"] .nav-item[data-nav="account"] .text::after{content:" ✓"}
 .connect-btn.unlink{border-color:var(--line);background:var(--surface);color:var(--ink-3)}
 .connect-btn.unlink:hover{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
 
+/* ---- الربط برمز: يقلّل التلميحات الطويلة إلى سطر + خطوة واحدة ---- */
+.need-line{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  color:var(--ink-3);font-size:10.5px;line-height:1.7;margin-top:7px;
+  border-top:1px dashed var(--line);padding-top:7px;
+}
+.need-line .need-text{flex:1 1 180px;min-width:0}
+.link-btn-ghost{
+  border:0;background:transparent;color:var(--accent-ink);font:inherit;font-size:10.5px;
+  font-weight:600;cursor:pointer;padding:2px 6px;border-radius:var(--r-sm);
+  white-space:nowrap;text-decoration:underline;text-underline-offset:3px;
+}
+.link-btn-ghost:hover{background:var(--accent-soft)}
+.token-box{
+  margin-top:9px;padding:11px;border:1px solid var(--line-strong);
+  border-radius:var(--r-md);background:var(--surface);
+  animation:slideIn var(--t-mid) var(--ease-out);
+}
+.token-box label{display:block;font-size:11px;font-weight:600;color:var(--ink-2);margin-bottom:5px}
+.token-box input{
+  width:100%;padding:9px 11px;border:1px solid var(--line-strong);border-radius:var(--r-sm);
+  font:inherit;font-size:11px;direction:ltr;text-align:left;background:var(--surface-2);color:var(--ink);
+}
+.token-box input:focus-visible{outline:0;border-color:var(--accent);box-shadow:var(--ring)}
+.token-box .token-row{display:flex;gap:7px;margin-top:8px;align-items:center;flex-wrap:wrap}
+.token-box .token-msg{flex:1 1 100%;font-size:10.5px;line-height:1.7;min-height:0}
+.token-box .token-msg[data-kind="err"]{color:var(--danger)}
+.token-box .token-msg[data-kind="ok"]{color:var(--ok)}
+.token-box ol{margin:6px 0 0;padding-inline-start:16px;font-size:10.5px;color:var(--ink-3);line-height:1.9}
+.token-box .where{
+  font-size:10px;color:var(--ink-4);direction:ltr;text-align:left;
+  background:var(--surface-3);border-radius:var(--r-sm);padding:5px 8px;margin-top:6px;
+  overflow-wrap:anywhere;
+}
+
 /* ---- شرائح حالة النشر ---- */
 .job-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:var(--s2)}
 .job-chip{font-size:10px;padding:4px 9px;border-radius:var(--r-pill);
