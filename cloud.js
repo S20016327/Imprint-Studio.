@@ -691,6 +691,34 @@ async function fetchAccounts() {
   }
 }
 
+/** حالة خدمة الربط على الخادم: ما هو منشور وما هو مهيّأ فعلًا. */
+let oauthStatus = null;        // كائن الحالة آخر مرة نجح فيها الجلب
+let oauthStatusAt = 0;         // وقت آخر جلب (كاش دقيقة)
+
+async function fetchOAuthStatus(force = false) {
+  if (!force && oauthStatus && Date.now() - oauthStatusAt < 60_000) return oauthStatus;
+  try {
+    const res = await fetch(SB + '/functions/v1/imprint-oauth-start?status=1', {
+      headers: { apikey: SB_KEY }
+    });
+    if (!res.ok) {
+      oauthStatus = { deployed: false, httpError: res.status };
+    } else {
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { data = {}; }
+      // خدمة تعيد 200 لكن ليست خدمتنا (مثل صفحة خطأ HTML) لا تُعدّ جاهزة
+      oauthStatus = data && data.service === 'imprint-oauth-start'
+        ? { deployed: true, ...data }
+        : { deployed: false, badPayload: true };
+    }
+  } catch {
+    oauthStatus = { deployed: false, network: true };
+  }
+  oauthStatusAt = Date.now();
+  return oauthStatus;
+}
+
 /**
  * يبدأ ربط حساب.
  * الربط الحقيقي يحتاج خادمًا يحمل client_secret، لذلك نوجّه إلى نقطة OAuth
@@ -710,15 +738,22 @@ async function startAccountLink(platform) {
       if (to) { location.href = to; return; }
     }
     if (res.status === 404) {
-      toast('خدمة الربط لم تُنشر بعد على الخادم. المطلوب تطبيق مطوّر معتمد.', 'warn');
+      toast('خدمة الربط غير منشورة على الخادم بعد.', 'warn');
+      status('خدمة الربط (Edge Function) لم تُنشر. راجع supabase/README.md للنشر.', 'warn');
       return;
     }
     const text = await res.text();
-    let msg = text;
-    try { msg = JSON.parse(text).error || text; } catch {}
+    let msg = text, reason = '';
+    try { const j = JSON.parse(text); msg = j.error || text; reason = j.reason || ''; } catch {}
+    if (res.status === 501 || reason === 'not_configured') {
+      // رسالة الخادم نفسها تحمل الخطوة المطلوبة لكل منصة
+      toast(humanError(msg), 'warn');
+      status(humanError(msg), 'warn');
+      return;
+    }
     toast('تعذر بدء الربط: ' + humanError(msg), 'err');
   } catch {
-    toast('خدمة الربط غير متاحة بعد. تحتاج نشر Edge Function وتطبيق مطوّر.', 'warn');
+    toast('تعذر الوصول لخدمة الربط. تحقق من الشبكة ثم أعد المحاولة.', 'err');
   }
 }
 
@@ -777,10 +812,28 @@ function renderAccountsPanel() {
     '<div id="accList"><p class="empty-note">جارٍ التحميل...</p></div>' +
     '<div class="hint-box" id="accNote"></div>');
 
-  fetchAccounts().then(accounts => {
+  Promise.all([fetchAccounts(), fetchOAuthStatus()]).then(([accounts, svc]) => {
     const list = $('accList');
     if (!list) return;
     list.innerHTML = '';
+
+    // حالة الخدمة نفسها — أهم سؤال: هل الربط ممكن أصلًا الآن؟
+    const svcLine = document.createElement('div');
+    svcLine.className = 'hint-box';
+    svcLine.id = 'svcStatus';
+    if (!svc || !svc.deployed) {
+      svcLine.dataset.state = 'err';
+      svcLine.textContent = svc && svc.httpError
+        ? 'خدمة الربط على الخادم غير جاهزة (HTTP ' + svc.httpError + ').'
+        : 'تعذر الوصول إلى خدمة الربط على الخادم.';
+    } else {
+      const readyNames = Object.keys(PLATFORM_META).filter(k => svc.ready && svc.ready[k]);
+      svcLine.dataset.state = readyNames.length ? 'ok' : 'warn';
+      svcLine.textContent = readyNames.length
+        ? 'الخادم جاهز لربط: ' + readyNames.join('، ') + '. تحتاج فقط موافقتك على صفحة المنصة.'
+        : 'الخدمة منشورة، لكن لا منصة مهيّأة بعد: يلزم إضافة مفاتيح تطبيق مطوّر في أسرار الخادم (لا تُوضع في المتصفح).';
+    }
+    list.appendChild(svcLine);
 
     Object.keys(PLATFORM_META).forEach(platform => {
       const meta = PLATFORM_META[platform];
@@ -805,14 +858,18 @@ function renderAccountsPanel() {
 
       const need = document.createElement('small');
       need.className = 'need';
-      need.textContent = acc
-        ? (acc.last_error || 'جاهز لاستقبال مهام النشر عند تفعيل المنصة.')
-        : ({
-            TikTok: 'يلزم تطبيق على TikTok for Developers ومراجعة Content Posting.',
-            Instagram: 'يلزم تحويل الحساب إلى Creator/Business ثم تطبيق Meta من نوع Business (بدون صفحة فيسبوك).',
-            Facebook: 'يلزم تطبيق Meta مع صلاحية pages_manage_posts وصفحة تملكها.',
-            YouTube: 'يلزم مشروع Google Cloud مع تفعيل YouTube Data API.'
-          })[platform];
+      if (acc) {
+        need.textContent = acc.last_error || 'جاهز لاستقبال مهام النشر عند تفعيل محوّل المنصة.';
+      } else if (svc && svc.deployed && svc.ready && svc.ready[platform]) {
+        need.textContent = 'الخادم مهيّأ لهذه المنصة — اضغط «ربط» للموافقة على صفحة المنصة الرسمية.';
+      } else {
+        need.textContent = (svc && svc.hints && svc.hints[platform]) || ({
+          TikTok: 'يلزم تطبيق على TikTok for Developers ومراجعة Content Posting.',
+          Instagram: 'يلزم تحويل الحساب إلى Creator/Business ثم تطبيق Meta من نوع Business (بدون صفحة فيسبوك).',
+          Facebook: 'يلزم تطبيق Meta مع صلاحية pages_manage_posts وصفحة تملكها.',
+          YouTube: 'يلزم مشروع Google Cloud مع تفعيل YouTube Data API.'
+        })[platform];
+      }
 
       info.append(title, state, need);
 
@@ -831,7 +888,7 @@ function renderAccountsPanel() {
     if (note) {
       note.textContent = connected
         ? 'لديك ' + connected + ' حساب مرتبط. النشر الفعلي يبدأ بعد تفعيل محوّل المنصة على الخادم.'
-        : 'لا يوجد حساب مرتبط بعد. زر «ربط» يفتح شاشة المنصة الرسمية لإعطاء الصلاحية.';
+        : 'لا يوجد حساب مرتبط بعد. زر «ربط» يفتح شاشة المنصة الرسمية لإعطاء الصلاحية — ولا يُطلب منك إدخال كلمة مرور داخل موقعنا أبدًا.';
     }
     refreshAccountsBadge();
     markLinkedPlatforms();

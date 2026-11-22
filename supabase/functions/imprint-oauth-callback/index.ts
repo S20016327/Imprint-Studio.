@@ -16,7 +16,19 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const STATE_SECRET = Deno.env.get('OAUTH_STATE_SECRET') ?? '';
+// مفتاح توقيع state: يُستخدم OAUTH_STATE_SECRET إن وُجد، وإلا يُشتق من
+// مفتاح الخدمة الموجود أصلًا في بيئة الدالة (سرّ عالي العشوائية) حتى لا
+// يتوقف الربط بسبب متغيّر ناقص. الاشتقاق لا يكشف المفتاح الأصلي.
+async function stateKey(): Promise<CryptoKey> {
+  const explicit = Deno.env.get('OAUTH_STATE_SECRET');
+  const raw = explicit && explicit.length >= 16
+    ? explicit
+    : 'imprint-oauth-state-v1:' + (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'missing');
+  return crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(raw),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+}
 const SITE = Deno.env.get('IMPRINT_SITE_URL') ?? 'https://s20016327.github.io/Imprint-Studio./';
 
 const env = (k: string) => Deno.env.get(k);
@@ -25,10 +37,7 @@ const env = (k: string) => Deno.env.get(k);
 async function verifyState(state: string) {
   const [body, sig] = state.split('.');
   if (!body || !sig) return null;
-  const key = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(STATE_SECRET),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
+  const key = await stateKey();
   const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
   const expected = btoa(String.fromCharCode(...new Uint8Array(mac))).replace(/=+$/, '');
   if (expected !== sig) return null;
@@ -117,11 +126,37 @@ async function exchangeGoogle(code: string, redirectUri: string): Promise<Exchan
   });
   const d = await r.json();
   if (!r.ok || !d.access_token) throw new Error('فشل تبادل الرمز مع Google: ' + (d.error_description ?? d.error));
+
+  // هوية القناة: بدونها لا يمكن ربط الحساب بصف فريد في social_accounts
+  let accountId = '';
+  let displayName: string | undefined;
+  try {
+    const ch = await fetch(
+      'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true',
+      { headers: { Authorization: 'Bearer ' + d.access_token } }
+    );
+    const cd = await ch.json();
+    const item = cd?.items?.[0];
+    if (item?.id) {
+      accountId = item.id;
+      displayName = item.snippet?.title;
+    }
+  } catch { /* سنكمل بمعرّف المستخدم أدناه */ }
+  if (!accountId) {
+    const ui = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: 'Bearer ' + d.access_token }
+    });
+    const ud = await ui.json();
+    accountId = ud.sub ?? '';
+    displayName = displayName ?? ud.email;
+  }
+
   return {
     token: d.access_token,
     refresh: d.refresh_token,
     expiresIn: d.expires_in,
-    accountId: '',
+    accountId,
+    displayName,
     scopes: (d.scope || '').split(' ').filter(Boolean)
   };
 }
@@ -134,7 +169,6 @@ Deno.serve(async (req) => {
 
   if (err) return back(SITE, { linked: 'error', reason: err });
   if (!code || !stateRaw) return back(SITE, { linked: 'error', reason: 'missing_code' });
-  if (!STATE_SECRET) return back(SITE, { linked: 'error', reason: 'server_misconfigured' });
 
   const state = await verifyState(stateRaw);
   if (!state) return back(SITE, { linked: 'error', reason: 'invalid_state' });
@@ -175,6 +209,10 @@ Deno.serve(async (req) => {
       ? new Date(Date.now() + result.expiresIn * 1000).toISOString()
       : null;
 
+    // ملاحظة: رمز Google صالح ساعة واحدة فقط، لكن التجديد يتم بـ refresh_token
+    // المحفوظ في Vault، لذلك يبقى الحساب "متصلًا" بعد انتهاء الرمز القصير.
+    const status = 'connected';
+
     const { error: upsertErr } = await admin.from('social_accounts').upsert({
       owner_id: state.uid,
       platform: state.platform,
@@ -183,7 +221,7 @@ Deno.serve(async (req) => {
       access_secret_id: accessId.data,
       refresh_secret_id: refreshId,
       scopes: result.scopes ?? [],
-      status: 'connected',
+      status,
       expires_at: expiresAt,
       last_error: null
     }, { onConflict: 'owner_id,platform,external_account_id' });

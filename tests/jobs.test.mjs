@@ -34,6 +34,11 @@ const dom = new JSDOM(merged, {
       if (url.includes('/rest/v1/imprint_posts') && o.method === 'POST')
         return json([{ id: 'post-1', ...JSON.parse(body) }]);
       if (url.includes('/rest/v1/imprint_posts') && url.includes('id=eq.')) return json([{ media_path: null }]);
+      if (url.includes('/functions/v1/imprint-oauth-start')) return json({
+        ok: true, deployed: true, service: 'imprint-oauth-start',
+        ready: { TikTok: false, Instagram: true, Facebook: false, YouTube: false },
+        redirectUris: {}, hints: { Instagram: 'خطوة إنستقرام من الخادم' }
+      });
       if (url.includes('/rest/v1/imprint_posts'))
         return json([{ id: 'post-1', title: 'T', platforms: ['TikTok'], scheduled_at: new Date().toISOString(),
           status: 'scheduled', updated_at: new Date().toISOString(), media_path: null }]);
