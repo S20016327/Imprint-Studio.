@@ -1307,7 +1307,8 @@ function renderAccountsPanel() {
         svcLine.dataset.state = 'ok';
         svcLine.textContent = 'الربط جاهز: استخدم «ربط برمز» أمام أي منصة — الرمز يُتحقق منه ويُحفظ مشفّرًا على الخادم.';
       } else {
-        svcLine.textContent = 'الخدمة منشورة، لكن لا منصة مهيّأة بعد: يلزم مفاتيح تطبيق مطوّر أو مسار الربط برمز.';
+        svcLine.textContent = 'الخدمة منشورة، لكن لا منصة مهيّأة بعد: يلزم مفاتيح تطبيق مطوّر أو مسار الربط برمز. ' +
+          'وإن لصقت رمزًا ورفضته Google برسالة OAuth، فالسبب أن ما لُصق ليس رمز وصول.';
       }
     }
     list.appendChild(svcLine);
@@ -1348,9 +1349,24 @@ function renderAccountsPanel() {
         const how = document.createElement('button');
         how.type = 'button';
         how.className = 'link-btn-ghost';
-        how.textContent = 'ربط برمز';
-        how.onclick = () => openTokenBox(div, platform);
-        need.append(needText, how);
+
+        // إن كان ربط OAuth مهيّأً على الخادم فهذا هو الطريق الصحيح.
+        // «ربط برمز» يبقى متاحًا لكن كبديل ثانوي، لا كخيار أول.
+        const oauthReady = !!(svc && svc.ready && svc.ready[platform]);
+        if (oauthReady) {
+          how.textContent = 'ربط بحسابك (موصى به)';
+          how.onclick = () => startAccountLink(platform);
+          const manual = document.createElement('button');
+          manual.type = 'button';
+          manual.className = 'link-btn-ghost';
+          manual.textContent = 'أو الصق رمزًا';
+          manual.onclick = () => openTokenBox(div, platform);
+          need.append(needText, how, manual);
+        } else {
+          how.textContent = 'ربط برمز';
+          how.onclick = () => openTokenBox(div, platform);
+          need.append(needText, how);
+        }
       }
 
       info.append(title, state, need);
