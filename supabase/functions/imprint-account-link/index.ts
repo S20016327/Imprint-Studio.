@@ -81,6 +81,8 @@ type Identity = {
   /** النطاق الذي يعمل عليه الرمز — يُختار من بادئته لا افتراضًا. */
   apiHost?: string;
   notes?: string;
+  /** رمز الصفحة — يُحفظ بدل رمز المستخدم لأنه الأصلح للنشر بصفة الصفحة. */
+  pageToken?: string;
 };
 
 /** IGAA… (Instagram Login) — صالح 60 يومًا، على graph.instagram.com */
@@ -119,19 +121,101 @@ async function igUnified(t: string): Promise<Identity> {
   };
 }
 
-async function fbPage(t: string): Promise<Identity> {
+/**
+ * صفحات فيسبوك — نُشخّص سبب «لا توجد صفحة» بدل تخمينه.
+ *
+ * `/me/accounts` يُعيد قائمة فارغة لسببين مختلفين تمامًا:
+ *  (أ) الرمز لا يحمل pages_show_list  → المشكلة في الصلاحيات
+ *  (ب) الصلاحية موجودة لكن لا صفحة مسندة لهذا المستخدم/مستخدم النظام
+ *
+ * نتحقق من الصلاحيات في (أ) ونعرض الأصول في (ب)، فتصل الرسالة بسبب محدد
+ * لا بجملة عامة تترك المستخدم يدور في نفس الخطوات.
+ *
+ * الصفحة الآن تُخزَّن بـ external_account_id = معرّف الصفحة، وباسم واضح،
+ * ونرفض الصفحة التي لا تملك صلاحية CREATE_CONTENT بدل ترك النشر يفشل لاحقًا.
+ */
+async function fbPage(t: string, wantPage?: string): Promise<Identity> {
   const base = 'https://graph.facebook.com/' + V;
-  const me = await fetch(base + '/me?fields=id,name&access_token=' + encodeURIComponent(t));
+  const q = (u: string) => u + (u.includes('?') ? '&' : '?') + 'access_token=' + encodeURIComponent(t);
+
+  const me = await fetch(q(base + '/me?fields=id,name'));
   const md = await me.json();
   if (!me.ok || md.error) throw new Error(md?.error?.message ?? 'رفض Facebook الرمز.');
 
-  const pages = await fetch(base + '/me/accounts?fields=id,name&access_token=' + encodeURIComponent(t));
-  const pd = await pages.json();
-  const page = pd?.data?.[0];
-  if (page?.id) {
-    return { accountId: String(page.id), displayName: page.name, scopes: ['pages_manage_posts'], apiHost: 'graph.facebook.com' };
+  // هل توجد صلاحية pages_show_list أصلًا؟
+  let scopes: string[] = [];
+  try {
+    const p = await fetch(q(base + '/me/permissions'));
+    const pd = await p.json();
+    scopes = (pd?.data ?? []).filter((x: any) => x.status === 'granted').map((x: any) => String(x.permission));
+  } catch { /* التشخيص تحسين لا شرط */ }
+
+  const hasShowList = scopes.includes('pages_show_list');
+  const hasManagePosts = scopes.includes('pages_manage_posts');
+
+  const pagesRes = await fetch(q(base + '/me/accounts?fields=id,name,access_token,tasks'));
+  const pd = await pagesRes.json();
+  const list: any[] = pd?.data ?? [];
+
+  if (!list.length) {
+    if (!scopes.length) {
+      throw new Error(
+        'الرمز لا يملك صلاحية pages_show_list، لذلك لا يمكن قراءة صفحتك. ' +
+        'أعد إنشاء الرمز مع pages_show_list و pages_manage_posts، وتأكد من إضافة الصفحة ' +
+        'إلى مستخدم النظام في business.facebook.com ← مستخدمو النظام ← إضافة أصول ← صفحات.'
+      );
+    }
+    if (!hasShowList) {
+      throw new Error(
+        'الرمز لا يملك pages_show_list (الصلاحيات الحالية: ' + (scopes.join(', ') || 'لا شيء') + '). ' +
+        'أعد إنشاء الرمز معها.'
+      );
+    }
+    throw new Error(
+      'الصلاحية pages_show_list موجودة، لكن لا صفحة مسندة لهذا الرمز. ' +
+      'أضف الصفحة: business.facebook.com ← مستخدمو النظام ← إضافة أصول ← صفحات ← ' +
+      'اختر صفحتك ← احفظ، ثم أنشئ رمزًا جديدًا (الرمز القديم لا يرى ما أُسند بعده).'
+    );
   }
-  throw new Error('لا توجد صفحة فيسبوك مرتبطة بهذا الرمز.');
+
+  // اختيار الصفحة: بالاسم إن طُلب، وإلا الأولى القابلة للنشر
+  const usable = list.filter((p) => {
+    const tasks: string[] = p?.tasks ?? [];
+    // بعض الرموز لا تُعيد tasks — لا نرفضها لهذا السبب وحده
+    return !tasks.length || tasks.includes('CREATE_CONTENT');
+  });
+
+  if (!usable.length) {
+    throw new Error(
+      'الصفحة موجودة لكنك لا تملك صلاحية «إنشاء محتوى» عليها. ' +
+      'اطلب دورًا إداريًا في الصفحة: business.facebook.com ← إعدادات الصفحة ← أدوار الصفحة.'
+    );
+  }
+
+  const page = wantPage
+    ? (usable.find((p) => String(p.name ?? '').toLowerCase() === wantPage.toLowerCase()) ?? usable[0])
+    : usable[0];
+
+  if (wantPage && page && String(page.name ?? '').toLowerCase() !== wantPage.toLowerCase()) {
+    // لم نجد الاسم المطلوب — نُخبر بأسماء الصفحات المتاحة بدل اختيار صامت
+    throw new Error(
+      'الصفحة «' + wantPage + '» غير موجودة لهذا الرمز. الصفحات المتاحة: ' +
+      usable.map((p) => p.name).join('، ') + '.'
+    );
+  }
+
+  // رمز الصفحة أقوى وأدق من رمز المستخدم للنشر بصفة الصفحة.
+  // يُحفظ في refresh_secret_id ليلتقطه العامل ويستخدمه.
+  return {
+    accountId: String(page.id),
+    displayName: page.name,
+    scopes: hasManagePosts ? ['pages_manage_posts'] : ['pages_show_list'],
+    apiHost: 'graph.facebook.com',
+    pageToken: page.access_token ? String(page.access_token) : undefined,
+    notes: hasManagePosts
+      ? 'صفحة فيسبوك: ' + page.name
+      : 'تحذير: الرمز لا يحمل pages_manage_posts — النشر قد يُرفض. أعد إنشاء الرمز معها.',
+  };
 }
 
 async function yt(t: string): Promise<Identity> {
@@ -164,7 +248,7 @@ const VERIFIERS: Record<string, (t: string) => Promise<Identity>> = {
   // البادئة تحدّد النطاق: رمز موحّد على نطاق إنستقرام يعيد
   // «Unsupported get request» — وهذا كان أصل فشل الربط.
   Instagram: (t) => (t.startsWith('EAA') ? igUnified(t) : igLogin(t)),
-  Facebook: fbPage,
+  Facebook: (t) => fbPage(t),
   YouTube: yt,
   TikTok: tt,
 };
@@ -222,9 +306,13 @@ Deno.serve(async (req) => {
     if (acc.error) throw acc.error;
 
     let refreshId: string | null = null;
-    if (refresh.length >= 10) {
+
+    // رمز الصفحة يحلّ محل رمز المستخدم عند النشر على صفحة فيسبوك:
+    // النشر برمز المستخدم يعمل أحيانًا فقط، ويفشل بلا سبب واضح.
+    const secondary = id.pageToken ?? (refresh.length >= 10 ? refresh : '');
+    if (secondary && secondary.length >= 10) {
       const r2 = await admin.rpc('store_social_token', {
-        p_owner_id: ownerId, p_platform: platform, p_token: refresh, p_label: 'refresh',
+        p_owner_id: ownerId, p_platform: platform, p_token: secondary, p_label: 'refresh',
       });
       if (!r2.error) refreshId = r2.data as string;
     }
