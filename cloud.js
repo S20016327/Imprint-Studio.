@@ -99,6 +99,22 @@ function renderAccount() {
   if (btn) btn.classList.toggle('signed', signed);
   const navAccount = document.querySelector('[data-nav="account"] .text');
   if (navAccount) navAccount.textContent = signed ? 'حسابي' : 'تسجيل الدخول';
+  if (typeof renderSessionBar === 'function') renderSessionBar();
+}
+
+/** يعكس حالة الدخول في شريط ظاهر أعلى الصفحة وفي جسم المستند. */
+function renderSessionBar() {
+  const bar = $('sessionBar'), txt = $('sessionText'), btn = $('sessionBtn');
+  const signed = isSignedIn();
+  document.body.dataset.signed = signed ? '1' : '0';
+  if (!bar) return;
+  bar.dataset.state = signed ? 'in' : 'out';
+  if (txt) {
+    txt.innerHTML = signed
+      ? 'مسجّل الدخول باسم <b>' + (session.user.email || '') + '</b> — الحفظ والربط مفعّلان.'
+      : 'وضع الزائر — يمكنك تجهيز المنشور، لكن الحفظ والربط يحتاجان تسجيل الدخول.';
+  }
+  if (btn) btn.textContent = signed ? 'حسابي' : 'تسجيل الدخول';
 }
 
 function persistSession(s) {
@@ -953,6 +969,9 @@ function boot() {
   restoreSession();
   initTheme();
   const fromOAuth = handleOAuthReturn();
+
+  const sessionBtn = $('sessionBtn');
+  if (sessionBtn) sessionBtn.onclick = () => openPanel('account');
 
   let toastBox = $('toast');
   if (!toastBox) {

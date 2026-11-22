@@ -254,6 +254,25 @@ h1,h2,h3{line-height:1.35;letter-spacing:-.01em;margin:0}
 .avatar.signed{border-color:color-mix(in srgb,var(--accent) 35%,var(--line))}
 .avatar.signed i{background:var(--accent);color:#fff}
 .avatar.signed span{color:var(--accent-ink);font-weight:600}
+.session-bar{
+  display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap;
+  padding:10px var(--s4);margin:0 0 var(--s4);
+  border:1px solid var(--line);border-radius:var(--r-md);
+  background:var(--surface-2);color:var(--ink-2);font-size:13px;
+  transition:background var(--t-mid) var(--ease),border-color var(--t-mid) var(--ease);
+}
+.session-bar[data-state="in"]{background:var(--ok-soft);border-color:color-mix(in srgb,var(--ok) 26%,var(--line));color:var(--ok)}
+.session-bar[data-state="in"] b{direction:ltr;unicode-bidi:isolate}
+.session-dot{width:8px;height:8px;border-radius:50%;background:var(--ink-4);flex:0 0 auto}
+.session-bar[data-state="in"] .session-dot{background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 16%,transparent)}
+.session-bar .spacer{flex:1 1 auto}
+.session-bar button{
+  font:inherit;font-weight:600;cursor:pointer;color:var(--accent-ink);
+  background:transparent;border:1px solid var(--line-strong);border-radius:var(--r-pill);
+  padding:5px 14px;transition:background var(--t-fast) var(--ease)
+}
+.session-bar button:hover{background:var(--surface)}
+body[data-signed="1"] .nav-item[data-nav="account"] .text::after{content:" ✓"}
 
 /* ---- المحتوى ---- */
 .content{padding:var(--s7) var(--s7) var(--s9);max-width:1360px;margin:0 auto}
@@ -769,6 +788,13 @@ h1,h2,h3{line-height:1.35;letter-spacing:-.01em;margin:0}
           <p>محتوى واحد، حضور في كل مكان. جهّز محتواك واختر منصاتك.</p>
         </div>
         <button class="secondary" type="button" id="newDraft">＋ &nbsp; مسودة جديدة</button>
+      </div>
+
+      <div class="session-bar" id="sessionBar" data-state="out" role="status" aria-live="polite">
+        <span class="session-dot" aria-hidden="true"></span>
+        <span id="sessionText">وضع الزائر — يمكنك تجهيز المنشور، لكن الحفظ والربط يحتاجان تسجيل الدخول.</span>
+        <span class="spacer"></span>
+        <button type="button" id="sessionBtn">تسجيل الدخول</button>
       </div>
 
       <div class="steps">
