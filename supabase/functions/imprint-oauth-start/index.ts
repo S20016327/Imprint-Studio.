@@ -5,21 +5,32 @@
 //  يتحقق من هوية المستخدم (JWT)، يبني رابط تفويض المنصة مع state موقّع،
 //  ويعيد توجيه المتصفح إليه. الأسرار لا تُرسل إلى المتصفح أبدًا.
 //
-//  المتغيرات المطلوبة في بيئة الدالة (Supabase Secrets):
-//    OAUTH_STATE_SECRET   سر عشوائي طويل لتوقيع state (منع CSRF/إعادة الاستخدام)
-//    TIKTOK_CLIENT_ID    / TIKTOK_CLIENT_SECRET    / TIKTOK_REDIRECT_URI      (اختياري)
-//    INSTAGRAM_CLIENT_ID / INSTAGRAM_CLIENT_SECRET / INSTAGRAM_REDIRECT_URI   (اختياري)
-//    META_CLIENT_ID      / META_CLIENT_SECRET      / META_REDIRECT_URI        (اختياري)
-//    GOOGLE_CLIENT_ID    / GOOGLE_CLIENT_SECRET    / GOOGLE_REDIRECT_URI      (اختياري)
+//  الأوضاع:
+//    ?platform=…&mode=json  → 200 + { authorizeUrl }   (يستخدمه المتصفح)
+//    ?platform=…            → 302 إلى صفحة المنصة     (متوافق مع curl)
+//    ?status=1 أو ?ping=1   → 200 + نسخة التشغيل والجاهزية، بلا أي سر
 //
-//  لا تعمل المنصة إلا إذا كانت متغيراتها مضبوطة فعليًا. الغياب ليس خطأً صامتًا:
-//  تعيد الدالة 501 برسالة واضحة بدل محاكاة ربط وهمي.
+//  ⚠️ إصلاح حرج (v5): كان الاستيراد من https://esm.sh يُفشل إقلاع الدالة
+//  (BOOT_ERROR / Function failed to start) لأن زمن تشغيل Deno في Supabase
+//  يعتمد مواصفة npm: ولا يجلب وحدات من الشبكة لحظة الإقلاع. أي استيراد
+//  بعيد هنا يعيد نفس العطل.
+//
+//  المتغيرات (Supabase Secrets):
+//    TIKTOK_CLIENT_ID    / _SECRET / _REDIRECT_URI   (اختياري)
+//    INSTAGRAM_CLIENT_ID / _SECRET / _REDIRECT_URI   (اختياري)
+//    META_CLIENT_ID      / _SECRET / _REDIRECT_URI   (اختياري)
+//    GOOGLE_CLIENT_ID    / _SECRET / _REDIRECT_URI   (اختياري)
+//    OAUTH_STATE_SECRET  (اختياري — يُشتق تلقائيًا إن غاب)
+//    IMPRINT_SITE_URL / IMPRINT_ALLOWED_ORIGIN (CORS)
+//
+//  المنصة غير المضبوطة تُعيد 501 برسالة واضحة بدل محاكاة ربط وهمي.
 // ============================================================================
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const BUILD = 'v5-npm-import';
 // مفتاح توقيع state: يُستخدم OAUTH_STATE_SECRET إن وُجد، وإلا يُشتق من
 // مفتاح الخدمة الموجود أصلًا في بيئة الدالة (سرّ عالي العشوائية) حتى لا
 // يتوقف الربط بسبب متغيّر ناقص. الاشتقاق لا يكشف المفتاح الأصلي.
@@ -163,8 +174,8 @@ Deno.serve(async (req) => {
   const platform = url.searchParams.get('platform') ?? '';
   const origin = url.searchParams.get('origin') ?? '';
 
-  // 0) نقطة تشخيص: تخبر الواجهة ما هو المهيّأ فعلًا (بلا أي قيم سرية)
-  if (url.searchParams.has('status') || !platform) {
+  // 0) نقطة تشخيص عامة (بلا أسرار). الوصول إليها يعني أن الإقلاع نجح.
+  if (url.searchParams.has('status') || url.searchParams.has('ping') || !platform) {
     const has = (k: string) => !!Deno.env.get(k);
     const readiness = {
       TikTok:    has('TIKTOK_CLIENT_ID') && has('TIKTOK_CLIENT_SECRET'),
@@ -175,6 +186,8 @@ Deno.serve(async (req) => {
     return json(req, {
       ok: true,
       service: 'imprint-oauth-start',
+      build: BUILD,
+      booted: true,
       stateSecretConfigured: true,
       redirectUris: {
         Instagram: Deno.env.get('INSTAGRAM_REDIRECT_URI') ?? null,
