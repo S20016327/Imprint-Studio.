@@ -701,21 +701,6 @@ async function fetchAccounts() {
 let oauthStatus = null;        // كائن الحالة آخر مرة نجح فيها الجلب
 let oauthStatusAt = 0;         // وقت آخر جلب (كاش دقيقة)
 
-/**
- * يحاول جلب حالة خدمة الربط.
- * مُهيّأ كـ no-cors كخطة بديلة: لا نقرأ المحتوى، لكن وصول الاستجابة الخام
- * (opaque) يعني أن الخادم موجود ولا يرفض الطلب — أفضل من ادعاء «تعذر الوصول».
- */
-async function probeOAuthService() {
-  const url = SB + '/functions/v1/imprint-oauth-start?status=1';
-  const res = await fetch(url, { headers: { apikey: SB_KEY } });
-  if (!res.ok) return { deployed: false, httpError: res.status };
-  const text = await res.text();
-  let data = {};
-  try { data = JSON.parse(text); } catch { data = {}; }
-  return { deployed: true, ...data };
-}
-
 async function fetchOAuthStatus(force = false) {
   if (!force && oauthStatus && Date.now() - oauthStatusAt < 60_000) return oauthStatus;
   try {
@@ -756,9 +741,11 @@ async function fetchOAuthStatus(force = false) {
  */
 async function startAccountLink(platform) {
   const base = SB + '/functions/v1/imprint-oauth-start';
-  const url = base + '?platform=' + encodeURIComponent(platform) +
-    '&origin=' + encodeURIComponent(location.origin + location.pathname) +
-    '&mode=json';
+  const query = '?platform=' + encodeURIComponent(platform) +
+    '&origin=' + encodeURIComponent(location.origin + location.pathname);
+  const url = base + query + '&mode=json';
+  // نفس الطلب بلا mode=json: يُظهر ردّ الخادم الحقيقي إن احتجنا فتحه يدويًا
+  const plainUrl = base + query;
   try {
     const res = await fetch(url, {
       headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token }
@@ -798,7 +785,7 @@ async function startAccountLink(platform) {
   } catch {
     // الطلب نفسه فشل على مستوى المتصفح (CORS/شبكة). نحاول فتح الخدمة مباشرة
     // في نافذة جديدة كي يرى المستخدم ردّ الخادم الحقيقي.
-    window.open(url, '_blank', 'noopener');
+    window.open(plainUrl, '_blank', 'noopener');
     toast('لم يستطع المتصفح قراءة ردّ الخادم. فتحت الخدمة في نافذة جديدة لتظهر الرسالة الفعلية.', 'warn');
   }
 }
