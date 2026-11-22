@@ -8,7 +8,7 @@ const URL_ = Deno.env.get('SUPABASE_URL')!;
 const KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const SITE = Deno.env.get('IMPRINT_SITE_URL') ?? 'https://s20016327.github.io/Imprint-Studio./';
 const EXTRA = Deno.env.get('IMPRINT_ALLOWED_ORIGIN') ?? '';
-const BUILD = 'v3-compact';
+const BUILD = 'v4-google-reason';
 const V = 'v26.0';
 
 const admin = createClient(URL_, KEY, { auth: { persistSession: false } });
@@ -43,8 +43,12 @@ const HELP: Record<string, { where: string; steps: string[] }> = {
     steps: ['أضف pages_show_list و pages_manage_posts.', 'Generate Access Token.', 'تأكد أن الحساب يملك صفحة.'],
   },
   YouTube: {
-    where: 'Google Cloud Console ← Credentials',
-    steps: ['فعّل YouTube Data API v3.', 'OAuth Playground بنطاق youtube.upload.', 'انسخ access_token.'],
+    where: 'OAuth Playground (لا Credentials)',
+    steps: [
+      'الأفضل: زر «ربط» أمام YouTube — الربط عبر OAuth منشور وجاهز.',
+      'وإن أردت يدويًّا: developers.google.com/oauthplayground ← الخانة ← https://www.googleapis.com/auth/youtube.upload ← Authorize.',
+      'Exchange authorization code for tokens ← انسخ access_token (ينتهي خلال ساعة).',
+    ],
   },
   TikTok: {
     where: 'developers.tiktok.com ← Content Posting API',
@@ -53,6 +57,13 @@ const HELP: Record<string, { where: string; steps: string[] }> = {
 };
 
 const REASONS_AR: Array<[RegExp, string]> = [
+  // ⚠️ رسالة Google هذه تعني: لم يصل رمز OAuth إلى المناداة إطلاقًا.
+  // الرسالة القديمة كانت تُرسل المستخدم إلى Credentials، وهي تُنشئ
+  // Client ID/Secret لا رمز وصول — الطريق الخطأ تمامًا. نُصحّحها.
+  [/Expected OAuth 2 access token|invalid authentication credentials/i,
+    'ما وصل إلى Google ليس رمز وصول. الأفضل: استخدم زر «ربط» أمام YouTube ' +
+    '(ربط OAuth جاهز على الخادم). والبديل اليدوي هو OAuth Playground بنطاق youtube.upload — ' +
+    'لا Credentials، فهي تعطيك Client ID وSecret وليس رمز وصول.'],
   [/invalid_grant|invalid_token|malformed|Cannot parse access token/i,
     'الرمز غير صالح أو منتهي. أنشئ رمزًا جديدًا من لوحة المنصة وانسخه كاملًا.'],
   [/expired|Session has expired/i, 'انتهت صلاحية الرمز. أنشئ رمزًا جديدًا.'],

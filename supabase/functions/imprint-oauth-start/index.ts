@@ -30,7 +30,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const BUILD = 'v5-npm-import';
+const BUILD = 'v6-derived-redirect';
 // مفتاح توقيع state: يُستخدم OAUTH_STATE_SECRET إن وُجد، وإلا يُشتق من
 // مفتاح الخدمة الموجود أصلًا في بيئة الدالة (سرّ عالي العشوائية) حتى لا
 // يتوقف الربط بسبب متغيّر ناقص. الاشتقاق لا يكشف المفتاح الأصلي.
@@ -93,6 +93,18 @@ async function signState(payload: Record<string, unknown>): Promise<string> {
   return body + '.' + sig;
 }
 
+/**
+ * عنوان العودة إلى Google: يُستخدم GOOGLE_REDIRECT_URI إن وُجد، وإلا يُشتق
+ * من عنوان الدالة نفسه. السبب حقيقي: عنوان العودة يجب أن يطابق المسجّل في
+ * Google Cloud حرفيًا، ونسيانه أو خطأ حرف واحد يوقف الربط بـ
+ * redirect_uri_mismatch. الاشتقاق يجعل القيمة الصحيحة هي الافتراضية.
+ */
+function googleRedirect(): string {
+  const explicit = Deno.env.get('GOOGLE_REDIRECT_URI');
+  if (explicit && explicit.startsWith('http')) return explicit;
+  return SUPABASE_URL.replace(/\/+$/, '') + '/functions/v1/imprint-oauth-callback';
+}
+
 type Provider = {
   authorizeUrl: string;
   clientId?: string;
@@ -146,7 +158,7 @@ function providerConfig(platform: string): Provider | null {
       return {
         authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
         clientId,
-        redirectUri: env('GOOGLE_REDIRECT_URI'),
+        redirectUri: googleRedirect(),
         scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly',
         extra: { access_type: 'offline', prompt: 'consent', response_type: 'code' }
       };
@@ -160,7 +172,7 @@ const PLATFORM_HINT: Record<string, string> = {
   TikTok: 'اربط تطبيقًا على TikTok for Developers واحصل على Client Key/Secret، ثم اضبط TIKTOK_CLIENT_ID وTIKTOK_CLIENT_SECRET وTIKTOK_REDIRECT_URI.',
   Instagram: 'حوّل حساب إنستقرام إلى Creator/Business، أنشئ تطبيق Meta من نوع Business وأضف منتج Instagram، ثم اضبط INSTAGRAM_CLIENT_ID وINSTAGRAM_CLIENT_SECRET وINSTAGRAM_REDIRECT_URI.',
   Facebook: 'أنشئ تطبيق Meta وأضف صلاحية pages_manage_posts، ثم اضبط META_CLIENT_ID وMETA_CLIENT_SECRET وMETA_REDIRECT_URI.',
-  YouTube: 'فعّل YouTube Data API v3 في Google Cloud وأنشئ OAuth Client، ثم اضبط GOOGLE_CLIENT_ID وGOOGLE_CLIENT_SECRET وGOOGLE_REDIRECT_URI.'
+  YouTube: 'ضَع GOOGLE_CLIENT_ID وGOOGLE_CLIENT_SECRET في أسرار Supabase، وأضف عنوان العودة المذكور في redirectUris إلى Authorized redirect URIs في Google Cloud.'
 };
 
 function reasonFor(platform: string): string {
@@ -193,7 +205,7 @@ Deno.serve(async (req) => {
         Instagram: Deno.env.get('INSTAGRAM_REDIRECT_URI') ?? null,
         TikTok: Deno.env.get('TIKTOK_REDIRECT_URI') ?? null,
         Facebook: Deno.env.get('META_REDIRECT_URI') ?? null,
-        YouTube: Deno.env.get('GOOGLE_REDIRECT_URI') ?? null
+        YouTube: googleRedirect()
       },
       ready: readiness,
       hints: PLATFORM_HINT

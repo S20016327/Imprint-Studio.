@@ -114,6 +114,16 @@ async function exchangeInstagram(code: string, redirectUri: string): Promise<Exc
   };
 }
 
+/**
+ * نفس اشتقاق عنوان العودة المستخدم في imprint-oauth-start.
+ * لو اختلف الاثنان لَرَفض Google التبادل بـredirect_uri_mismatch.
+ */
+function googleRedirect(): string {
+  const explicit = env('GOOGLE_REDIRECT_URI');
+  if (explicit && explicit.startsWith('http')) return explicit;
+  return SUPABASE_URL.replace(/\/+$/, '') + '/functions/v1/imprint-oauth-callback';
+}
+
 async function exchangeGoogle(code: string, redirectUri: string): Promise<Exchange> {
   const form = new URLSearchParams({
     code, client_id: env('GOOGLE_CLIENT_ID')!, client_secret: env('GOOGLE_CLIENT_SECRET')!,
@@ -183,7 +193,7 @@ Deno.serve(async (req) => {
     if (state.platform === 'Instagram') {
       result = await exchangeInstagram(code, env('INSTAGRAM_REDIRECT_URI')!);
     } else if (state.platform === 'YouTube') {
-      result = await exchangeGoogle(code, env('GOOGLE_REDIRECT_URI')!);
+      result = await exchangeGoogle(code, googleRedirect());
     } else {
       throw new Error(`منصة ${state.platform} غير مدعومة في العودة بعد.`);
     }

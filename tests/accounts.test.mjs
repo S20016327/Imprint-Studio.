@@ -115,8 +115,17 @@ async function openPanel(service, accounts) {
     check('每个 platform has one compact need line', needs.length === 4, String(needs.length));
     check('need lines are short (no wall of text)',
       needs.every(t => t.length < 120), needs.map(t => t.length).join(','));
-    check('every platform offers token linking',
-      [...w.document.querySelectorAll('.link-btn-ghost')].length === 4);
+    // كل منصة تُتيح الربط، لكن المنصة المهيّأة على الخادم تُقدّم OAuth أولًا
+    // («ربط بحسابك») ويبقى لصق الرمز بديلًا — فهي زرّان لا زرّ واحد.
+    const labels = [...w.document.querySelectorAll('.link-btn-ghost')].map(b => b.textContent);
+    check('every platform offers a linking path',
+      labels.filter(t => /ربط بحسابك|ربط برمز/.test(t)).length === 4,
+      labels.join(' | '));
+    check('a ready platform offers OAuth before a pasted token',
+      /ربط بحسابك/.test(labels.join(' ')),
+      'the token box is still the only path');
+    check('a pasted token stays available as a fallback',
+      /أو الصق رمزًا/.test(labels.join(' ')));
   }
 
   {
