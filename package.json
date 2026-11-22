@@ -1,0 +1,14 @@
+{
+  "name": "imprint-studio",
+  "version": "2.0.0",
+  "private": true,
+  "description": "بصمة إبداع | Imprint Creative — استوديو تجهيز وحفظ منشورات الصور والفيديو",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/check-html.mjs && node tests/flow.test.mjs && node tests/media.test.mjs",
+    "serve": "python3 -m http.server 8080 --bind 0.0.0.0"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  }
+}
