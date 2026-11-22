@@ -14,6 +14,12 @@ TikTok وInstagram وFacebook وYouTube.
 
 ---
 
+## دليل ربط إنستقرام خطوة بخطوة
+
+راجع [`docs/instagram-setup-ar.md`](docs/instagram-setup-ar.md) — يشرح لماذا
+يلزم تحويل الحساب إلى Creator/Business، وكيف تستخرج **Instagram App ID/Secret**
+(لا معرّف فيسبوك)، وأين توضع المفاتيح.
+
 ## ما تم إنجازه في هذه الجولة
 
 ### إصلاح خلل حاسم كان يعطّل الحفظ السحابي
