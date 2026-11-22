@@ -174,9 +174,10 @@ function toast(message, kind = 'info') {
 }
 function status(msg, kind) {
   const el = $('status');
-  if (!el) return;
+  if (!el) return el;
   el.textContent = msg;
   if (kind) el.dataset.kind = kind; else delete el.dataset.kind;
+  return el;
 }
 /** تنقّل كامل للصفحة — مفصولة لتُختبر بلا الاعتماد على window.location. */
 function navigateTo(url) {
@@ -257,8 +258,9 @@ function currentForm() {
 }
 
 async function saveDraft() {
-  if (uploading) return;
-  if (!await requireAuth()) return;
+  if (uploading) return null;
+  if (!await requireAuth()) return null;
+  let savedId = null;
 
   const form = currentForm();
   if (!form.title) { status('أضف عنوانًا قبل الحفظ.'); $('title').focus(); return; }
@@ -312,6 +314,7 @@ async function saveDraft() {
     }
 
     loadedId = saved[0].id;
+    savedId = saved[0].id;
     loadedPath = saved[0].media_path;
     if (currentFile) savedFile = currentFile;
 
@@ -351,6 +354,7 @@ async function saveDraft() {
     btn.removeAttribute('aria-busy');
     if (isSignedIn()) markLinkedPlatforms();
   }
+  return savedId || null;
 }
 
 /* ---------------------------- طابور النشر ------------------------------- */
@@ -1126,6 +1130,75 @@ async function markPublished(row, platform) {
   }
 }
 
+/**
+ * «انشر الآن» — ينادي الوسيط `imprint-publish-now`.
+ * لا نضع سر العامل هنا: الوسيط يتحقق من جلستك وملكيتك للمنشور، ثم ينادي
+ * العامل بالسر من داخل الخادم.
+ */
+async function publishNow(postId) {
+  // ensureSession تعيد boolean لا كائن الجلسة — نستخدم `session` العام بعدها
+  if (!await ensureSession()) { toast('سجّل الدخول أولًا.', 'warn'); return null; }
+  const jwt = session && session.access_token;
+  if (!jwt) { toast('جلسة غير صالحة — أعد تسجيل الدخول.', 'err'); return null; }
+
+  status('جارٍ النشر الآن...');
+  try {
+    const res = await fetch(SB + '/functions/v1/imprint-publish-now', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SB_KEY,
+        Authorization: 'Bearer ' + jwt
+      },
+      body: JSON.stringify({ post_id: postId })
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      status('تعذّر النشر: ' + (data.error || res.status), 'err');
+      toast(data.error || 'تعذّر بدء النشر.', 'err');
+      return data;
+    }
+
+    const results = data?.worker?.results || [];
+    const ok = results.filter(r => r && r.ok);
+    const bad = results.filter(r => r && !r.ok);
+
+    if (!results.length) {
+      status('أُضيفت المهام للطابور. ستُنفّذ خلال دقيقة.', 'ok');
+      toast('في الطابور — ستُنشر خلال دقيقة.', 'ok');
+    } else if (ok.length && !bad.length) {
+      status('نُشر على: ' + ok.map(r => r.platform).join(' و') + '.', 'ok');
+      toast('تم النشر بنجاح.', 'ok');
+    } else if (ok.length && bad.length) {
+      status('نُشر على ' + ok.map(r => r.platform).join(' و') + '، وفشل على ' +
+        bad.map(r => r.platform).join(' و') + '. ' + (bad[0]?.error || ''), 'warn');
+      toast('نشر جزئي — راجع التفاصيل.', 'warn');
+    } else {
+      status('لم يُنشر: ' + (bad[0]?.error || 'سبب غير معروف'), 'err');
+      toast('فشل النشر — راجع الرسالة.', 'err');
+    }
+    if (data?.note) {
+      const el = $('status');
+      if (el) el.textContent += ' ' + data.note;
+    }
+
+    await renderSchedule();
+    return data;
+  } catch (e) {
+    status('تعذّر الاتصال بخدمة النشر: ' + humanError(e), 'err');
+    toast(humanError(e), 'err');
+    return null;
+  }
+}
+
+/** يحفظ المسودة ثم ينشرها فورًا. */
+async function saveAndPublishNow() {
+  const id = await saveDraft();
+  if (!id) return;
+  await publishNow(id);
+}
+
 function renderAccountsPanel() {
   if (!isSignedIn()) {
     panelShell('الحسابات المرتبطة', 'سجّل الدخول أولًا لعرض حساباتك وربط منصاتك.',
@@ -1403,6 +1476,8 @@ function boot() {
   });
 
   $('draft').onclick = saveDraft;
+  const pn = $('publishNow');
+  if (pn) pn.onclick = () => saveAndPublishNow().catch(e => toast(humanError(e), 'err'));
   $('newDraft').onclick = () => newDraft();
 
   if (isSignedIn()) {

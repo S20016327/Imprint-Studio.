@@ -210,7 +210,8 @@ async function openPanel(service, accounts) {
   {
     const dir = new URL('../supabase/functions/', import.meta.url);
     const fns = fs.readdirSync(dir).filter(d => fs.statSync(new URL(d + '/', dir)).isDirectory());
-    check('four functions present', fns.length === 4, fns.join(','));
+    // كل دالة موجودة في المستودع تُفحص تلقائيًا — العدد يتغيّر مع الميزات
+    check('all function dirs discoverable', fns.length >= 4, fns.join(','));
     for (const fn of fns) {
       const src = fs.readFileSync(new URL(fn + '/index.ts', dir), 'utf8');
       const imports = src.split('\n').filter(l => /^\s*import\s/.test(l));
