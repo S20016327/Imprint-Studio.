@@ -792,10 +792,10 @@ function renderAccountsPanel() {
       need.textContent = acc
         ? (acc.last_error || 'جاهز لاستقبال مهام النشر عند تفعيل المنصة.')
         : ({
-            TikTok: 'يلزم تطبيق مطوّر معتمد من TikTok for Developers.',
-            Instagram: 'يلزم حساب أعمال مربوط بصفحة Facebook وتطبيق Meta.',
-            Facebook: 'يلزم تطبيق Meta مع صلاحية pages_manage_posts.',
-            YouTube: 'يلزم مشروع Google Cloud مع YouTube Data API.'
+            TikTok: 'يلزم تطبيق على TikTok for Developers ومراجعة Content Posting.',
+            Instagram: 'يلزم تحويل الحساب إلى Creator/Business ثم تطبيق Meta من نوع Business (بدون صفحة فيسبوك).',
+            Facebook: 'يلزم تطبيق Meta مع صلاحية pages_manage_posts وصفحة تملكها.',
+            YouTube: 'يلزم مشروع Google Cloud مع تفعيل YouTube Data API.'
           })[platform];
 
       info.append(title, state, need);
