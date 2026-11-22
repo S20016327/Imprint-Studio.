@@ -138,20 +138,104 @@ async function youtube(p: any, c: Creds) {
   return { external_post_id: String(d.id), external_url: d.id ? 'https://youtu.be/' + d.id : null };
 }
 
+/**
+ * تيك توك — ثلاث حقائق تحكم هذا الكود:
+ *
+ * ١) التطبيق غير المدقَّق (unaudited) يستطيع النشر بـ SELF_ONLY فقط.
+ *    إرسال PUBLIC_TO_EVERYONE يُرفض دائمًا. لذلك نسأل TikTok أولًا عن
+ *    الخيارات المسموحة لهذا الحساب (`creator_info`) ونختار منها، بدل
+ *    الافتراض. تمرير PUBLIC_TO_EVERYONE كان يجعل كل محاولة تفشل.
+ *
+ * ٢) الحساب يجب أن يكون خاصًّا وقت النشر للتطبيق غير المدقَّق، وإلا:
+ *    unaudited_client_can_only_post_to_private_accounts
+ *
+ * ٣) `init` لا يعني النشر. النجاح الحقيقي هو PUBLISH_COMPLETE من
+ *    status/fetch. الإعلان عن النشر بعد init كان ادعاءً غير صحيح.
+ */
+async function tiktokPrivacy(token: string): Promise<{ level: string; unaudited: boolean; note: string }> {
+  const r = await fetch('https://open.tiktokapis.com/v2/post/publish/creator_info/query/', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: '{}',
+  });
+  const d = await r.json();
+  const opts: string[] = d?.data?.privacy_level_options ?? [];
+  const code = String(d?.error?.code ?? '');
+
+  if (code && code !== 'ok') {
+    // لا نستطيع قراءة الخيارات — الأسلم SELF_ONLY، وهي المقبولة دائمًا
+    return { level: 'SELF_ONLY', unaudited: true, note: 'تعذّر قراءة خيارات الخصوصية — استُخدم SELF_ONLY.' };
+  }
+  // PUBLIC_TO_EVERYONE لا يظهر إلا لتطبيق مدقَّق
+  if (opts.includes('PUBLIC_TO_EVERYONE')) {
+    return { level: 'PUBLIC_TO_EVERYONE', unaudited: false, note: '' };
+  }
+  return {
+    level: 'SELF_ONLY',
+    unaudited: true,
+    note: 'تيك توك نشر المنشور بخصوصية «أنا فقط» لأن التطبيق غير مدقَّق بعد. لا أحد غيرك يراه.',
+  };
+}
+
 async function tiktok(p: any, c: Creds) {
-  if (!isVideo(p)) throw new Blocked('تيك توك لا يقبل الصور — يحتاج فيديو.');
-  const r = await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
+  if (!isVideo(p)) throw new Blocked('تيك توك لا يقبل الصور — يحتاج ملف فيديو. أزل تيك توك أو ارفع فيديو.');
+
+  const priv = await tiktokPrivacy(c.access_token);
+  const init = await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + c.access_token, 'Content-Type': 'application/json; charset=UTF-8' },
     body: JSON.stringify({
-      post_info: { title: caption(p).slice(0, 2200), privacy_level: 'PUBLIC_TO_EVERYONE' },
+      post_info: { title: caption(p).slice(0, 2200), privacy_level: priv.level },
       source_info: { source: 'PULL_FROM_URL', video_url: await mediaUrl(p.media_path) },
     }),
   });
-  const d = await r.json();
-  if (!r.ok || d?.error?.code !== 'ok') throw new Error('TikTok رفض النشر: ' + (d?.error?.message ?? r.status));
-  return { external_post_id: String(d?.data?.publish_id ?? ''), external_url: null };
+  const d = await init.json();
+  const code = String(d?.error?.code ?? '');
+  const msg = String(d?.error?.message ?? '');
+
+  if (code === 'unaudited_client_can_only_post_to_private_accounts') {
+    throw new Blocked(
+      'تيك توك: حسابك عام، والتطبيق غير مدقَّق بعد. اجعل حسابك خاصًّا مؤقتًا ' +
+      '(الإعدادات ← الخصوصية ← حساب خاص)، أو استخدم «نسخ إلى TikTok Studio» من جدول المنشورات.'
+    );
+  }
+  if (/url_ownership|verified|domain/i.test(code + msg)) {
+    throw new Blocked(
+      'تيك توك يرفض رابط الوسائط لأن دومين التخزين غير موثَّق عندهم. ' +
+      'استخدم «نسخ إلى TikTok Studio» من جدول المنشورات — يعمل فورًا بلا توثيق.'
+    );
+  }
+  if (!init.ok || code !== 'ok') {
+    throw new Error('TikTok رفض بدء النشر: ' + (msg || init.status));
+  }
+
+  // النشر لم يكتمل بعد — نتابع حتى PUBLISH_COMPLETE
+  const publishId = String(d?.data?.publish_id ?? '');
+  if (!publishId) throw new Transient('لم يُعِد TikTok معرّف نشر.');
+
+  const deadline = Date.now() + 3 * 60 * 1000;
+  for (;;) {
+    const s = await fetch('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + c.access_token, 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify({ publish_id: publishId }),
+    });
+    const sd = await s.json();
+    const st = String(sd?.data?.status ?? '');
+    if (st === 'PUBLISH_COMPLETE') break;
+    if (st === 'FAILED') {
+      throw new Error('تيك توك فشل في النشر: ' + (sd?.data?.fail_reason ?? 'سبب غير معروف'));
+    }
+    if (Date.now() > deadline) {
+      throw new Transient('انتهت مهلة معالجة الفيديو في تيك توك — ستُعاد المحاولة.');
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
+  // ملاحظة الخصوصية تُرفق بالنتيجة حتى يعرف المستخدم أن المنشور خاص لا عام
+  return { external_post_id: publishId, external_url: null, note: priv.note || undefined };
 }
+
 
 const PUB: Record<string, (p: any, c: Creds) => Promise<{ external_post_id: string; external_url: string | null }>> = {
   Instagram: instagram, Facebook: facebook, YouTube: youtube, TikTok: tiktok,
