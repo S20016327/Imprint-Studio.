@@ -175,6 +175,23 @@ async function openPanel(service, accounts) {
     check('all four link buttons exist', btns.length === 4);
   }
 
+  /* ---------- حماية من BOOT_ERROR: لا استيراد بعيد في الدوال ----------
+     زمن تشغيل Supabase يعتمد npm:/jsr: ولا يجلب وحدات من الشبكة عند الإقلاع.
+     أي https:// في سطر import يعني "Function failed to start" */
+  {
+    const dir = new URL('../supabase/functions/', import.meta.url);
+    const fns = fs.readdirSync(dir).filter(d => fs.statSync(new URL(d + '/', dir)).isDirectory());
+    check('three functions present', fns.length === 3, fns.join(','));
+    for (const fn of fns) {
+      const src = fs.readFileSync(new URL(fn + '/index.ts', dir), 'utf8');
+      const imports = src.split('\n').filter(l => /^\s*import\s/.test(l));
+      check(fn + ': no remote https import', !imports.some(l => /from\s+'https:\/\//.test(l)),
+        imports.filter(l => /https:\/\//.test(l)).join(' | '));
+      check(fn + ': uses npm: specifier', imports.some(l => /from\s+'npm:/.test(l)),
+        imports.join(' | '));
+    }
+  }
+
   check('no jsdom errors', errors.length === 0, errors.join(' | '));
 
   console.log(log.join('\n'));

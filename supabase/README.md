@@ -83,6 +83,35 @@ supabase functions deploy imprint-oauth-callback --no-verify-jwt
 > `yxmetzdoxbqndecslhlu` مع `verify_jwt = false`. أي أن «خدمة الربط غير منشورة»
 > لم تعد صحيحة — ما ينقص هو مفاتيح المنصات فقط.
 
+
+### ⚠️ قاعدة إلزامية للدوال (تسبّبت في انقطاع كامل)
+
+**لا تستورد أي وحدة من رابط بعيد** (`https://esm.sh/...`, `https://deno.land/...`).
+زمن تشغيل Deno في Supabase يعتمد `npm:` و`jsr:` ولا يجلب وحدات من الشبكة لحظة
+الإقلاع؛ أي استيراد بعيد يجعل الدالة تُقتل قبل تنفيذ سطر واحد ويظهر للمستخدم:
+
+```json
+{"code":"BOOT_ERROR","message":"Function failed to start (please check logs)"}
+```
+
+الصحيح:
+
+```ts
+import { createClient } from 'npm:@supabase/supabase-js@2';
+```
+
+ويُرفض هذا الخطأ تلقائيًا في `npm test` (فحص لكل ملف في `supabase/functions/`).
+
+### فحص الإقلاع بعد كل نشر (لا يكفي اختبار محلي)
+
+```bash
+# يجب أن يعيد 200 مع booted:true — أي شيء آخر يعني أن الدالة لم تُقلع
+curl -s "$SUPABASE_URL/functions/v1/imprint-oauth-start?ping=1"
+curl -s "$SUPABASE_URL/functions/v1/imprint-oauth-callback?ping=1"
+```
+
+`build` في الردّ يخبرك بالنسخة العاملة فعلًا (`v5-npm-import` هي التي تُقلع).
+
 ### التحقق السريع من الخادم
 
 ```bash
