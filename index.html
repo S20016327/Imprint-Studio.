@@ -784,6 +784,60 @@ body[data-signed="1"] .nav-item[data-nav="account"] .text::after{content:" ✓"}
   .content{padding:0;max-width:none}
 }
 
+/* ---- الهوية: شعار وبانر ---- */
+.brand-row{
+  display:grid;grid-template-columns:1fr auto;gap:8px 14px;align-items:center;
+  padding:14px 0;border-bottom:1px solid rgba(16,113,119,.12);
+}
+.brand-row:last-of-type{border-bottom:0}
+.brand-info{min-width:0}
+.brand-info strong{display:block;font-size:14px}
+.brand-info small{display:block;font-size:12px;color:#6b837c;line-height:1.6;margin-top:2px}
+.brand-result{grid-column:1/-1;font-size:12.5px;line-height:1.6;min-height:0}
+.brand-result[data-kind="ok"]{color:#1a7f5a}
+.brand-result[data-kind="err"]{color:#b4541f}
+.site-banner{
+  height:88px;border-radius:12px;margin:0 12px 12px;background-size:cover;
+  background-position:center;border:1px solid rgba(16,113,119,.18);
+}
+
+/* ---- شكل النشر: ريلز أم منشور ---- */
+.formats{display:grid;gap:10px;margin-bottom:6px}
+.format-opt{
+  display:flex;align-items:center;gap:12px;width:100%;text-align:right;cursor:pointer;
+  padding:12px 14px;border:1px solid rgba(16,113,119,.22);border-radius:14px;background:#fff;
+  font:inherit;color:inherit;transition:border-color .15s,box-shadow .15s,background .15s;
+}
+.format-opt:hover{border-color:rgba(16,113,119,.45)}
+.format-opt:focus-visible{outline:2px solid var(--accent,#107177);outline-offset:2px}
+.format-opt.selected{
+  border-color:var(--accent,#107177);
+  background:color-mix(in srgb,var(--accent,#107177) 7%,#fff);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--accent,#107177) 35%,transparent);
+}
+.fmt-ico{font-size:18px;line-height:1;color:var(--accent,#107177);flex-shrink:0}
+.fmt-body{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.fmt-body strong{font-size:14px}
+.fmt-body small{font-size:12px;color:#6b837c;line-height:1.5}
+.fmt-check{
+  width:18px;height:18px;border-radius:50%;flex-shrink:0;
+  border:1.5px solid rgba(16,113,119,.35);position:relative;
+}
+.format-opt.selected .fmt-check{border-color:var(--accent,#107177);background:var(--accent,#107177)}
+.format-opt.selected .fmt-check::after{
+  content:"";position:absolute;inset:4px;border-radius:50%;background:#fff;
+}
+.caps{margin-top:12px;padding:12px 14px;border-radius:12px;background:#f4f8f7;border:1px solid rgba(16,113,119,.16)}
+.caps-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.caps-head strong{font-size:13px}
+.caps-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.caps-list li{display:flex;gap:8px;font-size:12.5px;line-height:1.6;align-items:flex-start}
+.caps-list .cap-mark{flex-shrink:0;font-weight:700}
+.caps-list li[data-ok="true"] .cap-mark{color:#1a7f5a}
+.caps-list li[data-ok="false"] .cap-mark{color:#b4541f}
+.caps-list li[data-ok="warn"] .cap-mark{color:#9a6b00}
+.caps-list .cap-name{font-weight:600}
+
 /* ---- زر نصي داخل سطر ---- */
 .link-btn{
   border:0;background:none;padding:0;font:inherit;color:var(--accent);
@@ -815,6 +869,9 @@ body[data-signed="1"] .nav-item[data-nav="account"] .text::after{content:" ✓"}
       <button class="nav-item" type="button" data-nav="accounts">
         <span class="nav-ico" aria-hidden="true">◉</span><span class="text">الحسابات المرتبطة</span>
         <span class="nav-badge" id="accountsBadge" hidden></span>
+      </button>
+      <button class="nav-item" type="button" data-nav="brand">
+        <span class="nav-ico" aria-hidden="true">✦</span><span class="text">الهوية والشعار</span>
       </button>
       <button class="nav-item" type="button" data-nav="account">
         <span class="nav-ico" aria-hidden="true">◌</span><span class="text">تسجيل الدخول</span>
@@ -912,10 +969,45 @@ body[data-signed="1"] .nav-item[data-nav="account"] .text::after{content:" ✓"}
             </div>
           </section>
 
+          <section class="card" id="formatCard">
+            <div class="card-head">
+              <div><h2>شكل النشر</h2><p class="sub">ريلز أم منشور عادي؟ هذا القرار يغيّر المسار على المنصة، فلا يُخمَّن.</p></div>
+              <span class="tag">الخطوة ٠٣</span>
+            </div>
+
+            <div class="formats" role="radiogroup" aria-label="شكل النشر">
+              <button type="button" class="format-opt selected" data-format="post" role="radio" aria-checked="true">
+                <span class="fmt-ico" aria-hidden="true">▤</span>
+                <span class="fmt-body">
+                  <strong>منشور عادي</strong>
+                  <small>صورة أو فيديو في خلاصة الصفحة. يعمل بأي مقاس.</small>
+                </span>
+                <span class="fmt-check" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="format-opt" data-format="reel" role="radio" aria-checked="false">
+                <span class="fmt-ico" aria-hidden="true">▯</span>
+                <span class="fmt-body">
+                  <strong>ريلز</strong>
+                  <small>فيديو رأسي 9:16، من ٣ إلى ٩٠ ثانية. مسار نشر مستقل على فيسبوك.</small>
+                </span>
+                <span class="fmt-check" aria-hidden="true"></span>
+              </button>
+            </div>
+
+            <div class="caps" id="capsBox" role="status" aria-live="polite" hidden>
+              <div class="caps-head">
+                <strong id="capsTitle">فحص الصلاحيات</strong>
+                <button type="button" class="link-btn" id="capsRefresh">أعد الفحص</button>
+              </div>
+              <ul class="caps-list" id="capsList"></ul>
+            </div>
+            <p class="hint" id="formatHint" style="margin:10px 0 0">اختر الشكل قبل النشر. سنفحص صلاحيات الحساب ونخبرك بما هو ممكن فعلًا قبل أن تبدأ.</p>
+          </section>
+
           <section class="card">
             <div class="card-head">
               <div><h2>اختر منصات النشر</h2><p class="sub">حدد المنصات التي تريد أن يصل إليها محتواك.</p></div>
-              <span class="tag">الخطوة ٠٣</span>
+              <span class="tag">الخطوة ٠٤</span>
             </div>
             <div class="platforms">
               <button type="button" class="platform" data-name="TikTok"><span class="check" aria-hidden="true"></span><span class="icon" style="background:#14262b" aria-hidden="true">♪</span><span class="platform-text"><span class="platform-name">TikTok<span class="linked-dot off" aria-hidden="true"></span></span><small>غير مرتبط</small></span></button>

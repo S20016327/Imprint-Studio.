@@ -33,6 +33,23 @@ const dom = new JSDOM(merged, {
         access_token: 't', refresh_token: 'r', expires_at: Math.floor(Date.now() / 1000) + 3600,
         user: { id: 'aaaaaaaa-1111-4111-8111-111111111111', email: 'o@e.com' }
       });
+      // المسار الأساسي الآن: imprint-brand يثبّت النوع ويفحص الصلاحيات قبل النشر.
+      if (url.includes('/functions/v1/imprint-brand') && !url.includes('mode=capabilities')) {
+        w.__calls.push({ url, headers: o.headers, body: JSON.parse(o.body) });
+        return json(WORKER_RESPONSE, WORKER_RESPONSE.__status || 200);
+      }
+      // فحص الصلاحيات: يردّ بقدرات حقيقية كي لا يتعطّل الرسم
+      if (url.includes('/functions/v1/imprint-brand?mode=capabilities')) {
+        return json({
+          ok: true, platform: 'Facebook',
+          caps: {
+            post: { ok: true, reason_ar: 'ممكن.' },
+            reel: { ok: false, reason_ar: 'لا يمكن نشر ريلز بهذا الرمز.', needs: ['pages_read_engagement'] },
+            picture: { ok: true, reason_ar: 'ممكن.' },
+            cover: { ok: false, reason_ar: 'غير مضمون.', needs: ['business_management'] }
+          }
+        });
+      }
       if (url.includes('imprint-publish-now')) {
         w.__calls.push({ url, headers: o.headers, body: JSON.parse(o.body) });
         return json(WORKER_RESPONSE, WORKER_RESPONSE.__status || 200);
@@ -77,10 +94,12 @@ async function fillAndPublish() {
   await tick(500);
 
   const call = w.__calls[w.__calls.length - 1];
-  check('calls the server-side broker (not the worker)', !!call && /imprint-publish-now/.test(call.url), call?.url);
-  check('sends the user JWT (not undefined)', /^Bearer t$/.test(call.headers.Authorization || ''), call.headers.Authorization);
+  check('calls the server-side broker (not the worker)',
+    !!call && /imprint-brand|imprint-publish-now/.test(call.url), call?.url);
+  check('sends the user JWT (not undefined)',
+    /^Bearer t$/.test((call?.headers || {}).Authorization || ''), (call?.headers || {}).Authorization);
   check('never sends a worker secret from the browser', !('x-worker-secret' in (call.headers || {})), JSON.stringify(call.headers));
-  check('sends the saved post id', call.body.post_id === 'post-9', JSON.stringify(call.body));
+  check('sends the saved post id', call?.body?.post_id === 'post-9', JSON.stringify(call?.body));
   check('reports both platforms succeeded', /نُشر على: Instagram وYouTube/.test($('status').textContent), $('status').textContent);
   check('success is marked ok', $('status').dataset.kind === 'ok', $('status').dataset.kind);
 

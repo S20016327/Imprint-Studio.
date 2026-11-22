@@ -1,4 +1,4 @@
-// بصمة إبداع — عامل النشر (v3-signed-media)
+// بصمة إبداع — عامل النشر (v7-reels)
 // Supabase Edge Function (Deno) — خادم فقط
 //   POST ?mode=due  (pg_cron كل دقيقة)  |  POST ?mode=now { post_id }  |  Header: x-worker-secret
 //
@@ -12,7 +12,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 const URL_ = Deno.env.get('SUPABASE_URL')!;
 const KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const SECRET = Deno.env.get('IMPRINT_WORKER_SECRET') ?? '';
-const WORKER = 'imprint-publish-v6';
+const WORKER = 'imprint-publish-v7';
 const V = 'v26.0';
 
 const admin = createClient(URL_, KEY, { auth: { persistSession: false } });
@@ -23,6 +23,133 @@ type Creds = { access_token: string; refresh_token: string | null; api_host: str
 
 const caption = (p: any) => [p.title, p.description, p.hashtags].filter(Boolean).join('\n\n').slice(0, 2200);
 const isVideo = (p: any) => String(p.media_type ?? '').toLowerCase().includes('video');
+const isReel = (p: any) => String(p.publish_format ?? '') === 'reel';
+
+/** حدود Meta للريلز — نرفض قبل الرفع بدل أن نُسمّي فيديو عاديًّا «ريلز». */
+const REEL_MAX_BYTES = 150 * 1024 * 1024;
+
+/**
+ * رفع ملف إلى rupload.facebook.com كاملًا في الطلب — لأن العامل لا يملك
+ * نظام ملفات دائمًا. نقرأ البايتات من التخزين ونسلّمها في جسم الرفع.
+ */
+async function storageBytes(path: string | null): Promise<{ blob: Blob; size: number; type: string }> {
+  if (!path) throw new Blocked('لا توجد وسائط للنشر.');
+  const clean = String(path).replace(/^\/+/, '');
+  const dl = await admin.storage.from('imprint-media').download(clean);
+  if (dl.error || !dl.data) {
+    throw new Blocked('تعذّر قراءة الملف من التخزين: ' + (dl.error?.message ?? 'غير معروف'));
+  }
+  const blob = dl.data as Blob;
+  return { blob, size: blob.size, type: blob.type || 'video/mp4' };
+}
+
+/**
+ * نشر ريلز على صفحة فيسبوك — ثلاث مراحل كما في توثيق Meta:
+ *   ① POST /{page}/video_reels  upload_phase=start   → video_id + upload_url
+ *   ② POST {upload_url}         جسم الطلب = بايتات الفيديو
+ *   ③ POST /{page}/video_reels  upload_phase=finish  → تُنشر أو تبقى مسودة
+ *
+ * لماذا هذا المسار لا /videos؟ لأن /videos تُنشئ فيديو صفحة عاديًّا؛
+ * فيسبوك قد يعرضه كريل إن كان رأسيًّا، لكن ذلك ليس نشر ريلز.
+ */
+async function facebookReel(p: any, c: Creds) {
+  const base = 'https://graph.facebook.com/' + V;
+  const token = c.refresh_token || c.access_token;
+  const pageId = c.external_account_id;
+  const media = await mediaUrl(p.media_path);
+
+  // ① بدء جلسة الرفع
+  const startParams = new URLSearchParams({
+    upload_phase: 'start',
+    access_token: token,
+  });
+  const startRes = await fetch(base + '/' + pageId + '/video_reels', {
+    method: 'POST',
+    body: startParams,
+  });
+  const start = await startRes.json();
+  if (!startRes.ok || start.error) {
+    const m = String(start?.error?.message ?? startRes.status);
+    if (/permission|\(#10\)|\(#200\)|\(#3\)/i.test(m)) {
+      throw new Blocked(
+        'فيسبوك رفض بدء ريلز لعدم كفاية الصلاحية. المطلوب: pages_manage_posts (والمستحسن pages_read_engagement). ' +
+          'التفصيل: ' + m,
+      );
+    }
+    throw new Error('فيسبوك رفض بدء جلسة الريلز: ' + m);
+  }
+  const videoId = String(start.video_id ?? '');
+  const uploadUrl = String(start.upload_url ?? '');
+  if (!videoId || !uploadUrl) throw new Transient('لم يُعِد فيسبوك معرّف فيديو الريلز.');
+
+  // ② الرفع — من التخزين إلى rupload مباشرة
+  const file = await storageBytes(p.media_path);
+  if (file.size > REEL_MAX_BYTES) {
+    throw new Blocked(
+      'ملف الريلز أكبر من ١٥٠ ميغابايت. قلّل الحجم ثم أعد المحاولة.',
+    );
+  }
+  if (file.size === 0) throw new Blocked('ملف الفيديو فارغ.');
+
+  const upRes = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: 'OAuth ' + token,
+      offset: '0',
+      file_size: String(file.size),
+      'Content-Type': 'application/octet-stream',
+      // عنوان المصدر مطلوب عمليًا لبعض الصفحات
+      'X-Entity-Length': String(file.size),
+    },
+    body: file.blob,
+  });
+  const upText = await upRes.text();
+  if (!upRes.ok) {
+    throw new Error('فشل رفع الفيديو إلى فيسبوك: ' + (upText.slice(0, 300) || upRes.status));
+  }
+
+  // ③ الإنهاء والنشر
+  const text = caption(p);
+  const finishParams = new URLSearchParams({
+    video_id: videoId,
+    upload_phase: 'finish',
+    video_state: 'PUBLISHED',
+    access_token: token,
+  });
+  if (text) finishParams.set('description', text);
+
+  const finRes = await fetch(base + '/' + pageId + '/video_reels', {
+    method: 'POST',
+    body: finishParams,
+  });
+  const fin = await finRes.json();
+  if (!finRes.ok || fin.error) {
+    const m = String(fin?.error?.message ?? finRes.status);
+    throw new Error('فيسبوك رفض نشر الريلز: ' + m);
+  }
+
+  // الريلز تُعيد success. نشرها النهائي غير متزامن — نتحقق من الحالة
+  // حتى لا نقول «نُشر» بلا دليل. نقبل نجاحًا صريحًا أو ظهور المنشور.
+  const postId = String(fin.post_id ?? '');
+  if (postId) {
+    return {
+      external_post_id: postId,
+      external_url: 'https://www.facebook.com/' + postId,
+      note: 'ريلز على فيسبوك. المعالجة قد تستغرق دقيقة قبل ظهوره في الصفحة.',
+    };
+  }
+  if (fin.success === true) {
+    return {
+      external_post_id: 'reel:' + videoId,
+      external_url: null,
+      note:
+        'قبل فيسبوك جلسة الريلز (video_id: ' + videoId + ') لكنه لم يُعِد رابط منشور. ' +
+        'افتح صفحتك للتأكد من ظهوره — المعالجة غير متزامنة.',
+    };
+  }
+  throw new Transient('فيسبوك لم يؤكد نشر الريلز. النتيجة: ' + JSON.stringify(fin).slice(0, 300));
+}
+
 
 class Blocked extends Error {}
 class Transient extends Error {}
@@ -95,6 +222,9 @@ async function instagram(p: any, c: Creds) {
 }
 
 async function facebook(p: any, c: Creds) {
+  // الريلز مسار مستقل تمامًا — لا نُسمّي فيديو عاديًّا «ريلز».
+  if (isReel(p)) return facebookReel(p, c);
+
   const base = 'https://graph.facebook.com/' + V;
   // النشر بصفة الصفحة برمز الصفحة هو المسار الموثَّق.
   const token = c.refresh_token || c.access_token;
@@ -279,7 +409,7 @@ const PUB: Record<string, (p: any, c: Creds) => Promise<{ external_post_id: stri
 async function processJob(job: Job) {
   try {
     const { data: post, error } = await admin.from('imprint_posts')
-      .select('id, owner_id, title, description, hashtags, media_path, media_type, platforms').eq('id', job.post_id).single();
+      .select('id, owner_id, title, description, hashtags, media_path, media_type, platforms, publish_format').eq('id', job.post_id).single();
     if (error || !post) throw new Blocked('المنشور غير موجود.');
     const c = await creds(job.owner_id, job.platform);
     const fn = PUB[job.platform];
