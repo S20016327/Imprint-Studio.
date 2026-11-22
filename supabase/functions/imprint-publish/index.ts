@@ -96,7 +96,10 @@ async function instagram(p: any, c: Creds) {
 
 async function facebook(p: any, c: Creds) {
   const base = 'https://graph.facebook.com/' + V;
-  const params = new URLSearchParams({ access_token: c.access_token, description: caption(p) });
+  // النشر بصفة الصفحة برمز الصفحة هو المسار الموثَّق. رمز المستخدم يعمل
+  // أحيانًا فقط فيُنتج فشلًا متقطعًا بلا سبب واضح — لذلك نُقدّمه لو وُجد.
+  const token = c.refresh_token || c.access_token;
+  const params = new URLSearchParams({ access_token: token, description: caption(p) });
   params.set(isVideo(p) ? 'file_url' : 'url', await mediaUrl(p.media_path));
   const ep = base + '/' + c.external_account_id + (isVideo(p) ? '/videos' : '/photos');
   const r = await fetch(ep, { method: 'POST', body: params });
