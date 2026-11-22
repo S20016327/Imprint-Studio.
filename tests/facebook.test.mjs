@@ -34,7 +34,7 @@ check('supports selecting a specific page by name',
   /wantPage/.test(fb) && /الصفحات المتاحة/.test(fb));
 
 // العامل
-const fbPub = (pub.match(/async function facebook[\s\S]*?\n}\n/) || [''])[0];
+const fbPub = (pub.match(/async function facebook\(p: any[\s\S]*?\n}\n/) || [''])[0];
 check('publisher prefers the page token',
   /refresh_token \|\| c\.access_token/.test(fbPub),
   'publisher still posts with the user token');

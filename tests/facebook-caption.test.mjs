@@ -5,7 +5,7 @@ import fs from 'fs';
 const pub = fs.readFileSync(new URL('../supabase/functions/imprint-publish/index.ts', import.meta.url), 'utf8');
 const log = []; const check = (n, c, x = '') => log.push((c ? 'PASS ' : 'FAIL ') + n + (x ? ' :: ' + x : ''));
 
-const fb = (pub.match(/async function facebook[\s\S]*?\n}\n/) || [''])[0];
+const fb = (pub.match(/async function facebook\(p: any[\s\S]*?\n}\n/) || [''])[0];
 
 check('photo posts send the caption as `message`',
   /params\.set\('message', text\)/.test(fb),

@@ -25,6 +25,7 @@ const MIME_BY_EXT = {
 let session = null;        // جلسة Supabase Auth
 let loadedId = null;       // معرّف المسودة المفتوحة
 let loadedPath = null;     // مسار الوسائط المحفوظة
+let loadedType = null;     // نوع الوسائط المحفوظة (لملف لم يُحمَّل في هذه الجلسة)
 let savedFile = null;      // الملف المحفوظ فعلًا لهذه المسودة
 let uploading = false;
 let currentFile = null;    // الملف المختار في المتصفح
@@ -252,6 +253,7 @@ function currentForm() {
     description: $('desc').value,
     hashtags: $('tags').value,
     platforms,
+    publish_format: selectedFormat(),
     scheduled_at: later && $('when').value ? new Date($('when').value).toISOString() : null,
     later
   };
@@ -266,6 +268,16 @@ async function saveDraft() {
   if (!form.title) { status('أضف عنوانًا قبل الحفظ.'); $('title').focus(); return; }
   if (!form.platforms.length) { status('اختر منصة واحدة على الأقل قبل الحفظ.'); return; }
   if (form.later && !$('when').value) { status('حدّد موعد الجدولة أو اختر «النشر فورًا».'); $('when').focus(); return; }
+
+  // الريلز بلا فيديو = خطأ نُعلنه قبل الرفع، لا بعده.
+  if (form.publish_format === 'reel') {
+    const type = currentFile ? currentFile.type : (loadedType || '');
+    if (!String(type).toLowerCase().includes('video')) {
+      status('اخترت «ريلز»، لكن المرفق ليس فيديو. الريلز فيديو رأسي 9:16 مدته 3–90 ثانية.');
+      toast('الريلز تحتاج ملف فيديو.', 'warn');
+      return null;
+    }
+  }
 
   const btn = $('draft');
   const previousPath = loadedPath;
@@ -293,6 +305,7 @@ async function saveDraft() {
       description: form.description,
       hashtags: form.hashtags,
       platforms: form.platforms,
+      publish_format: form.publish_format,
       media_path: uploadedPath || previousPath,
       media_type: currentFile ? currentFile.type : (uploadedPath ? null : undefined),
       scheduled_at: form.scheduled_at,
@@ -316,6 +329,7 @@ async function saveDraft() {
     loadedId = saved[0].id;
     savedId = saved[0].id;
     loadedPath = saved[0].media_path;
+    loadedType = saved[0].media_type || (currentFile ? currentFile.type : loadedType);
     if (currentFile) savedFile = currentFile;
 
     // تنظيف الملف القديم بعد نجاح الاستبدال
@@ -421,6 +435,7 @@ async function openDraft(id) {
   closePanel();
   loadedId = row.id;
   loadedPath = row.media_path;
+  loadedType = row.media_type || null;
   savedFile = null;
   resetMediaView();
 
@@ -695,6 +710,7 @@ function openPanel(which) {
   if (which === 'accounts') return renderAccountsPanel();
   if (which === 'library') return renderLibraryPanel();
   if (which === 'schedule') return renderSchedulePanel();
+  if (which === 'brand') return renderBrandPanel();
   return renderAccountPanel();
 }
 
@@ -1143,7 +1159,9 @@ async function publishNow(postId) {
 
   status('جارٍ النشر الآن...');
   try {
-    const res = await fetch(SB + '/functions/v1/imprint-publish-now', {
+    // المسار المفضّل: `imprint-brand` يثبّت النوع (منشور/ريلز)، يفحص الصلاحيات،
+    // ثم يعيد دليلًا على ما أثبتته المنصة. الوسيط القديم يبقى بديلًا عند الحاجة.
+    let res = await fetch(SB + '/functions/v1/imprint-brand', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1152,17 +1170,47 @@ async function publishNow(postId) {
       },
       body: JSON.stringify({ post_id: postId })
     });
-    const data = await res.json().catch(() => ({}));
+    let data = await res.json().catch(() => ({}));
+
+    const fnMissing = res.status === 404 &&
+      /not found|NOT_FOUND|was not found/i.test(JSON.stringify(data || {}));
+    if (fnMissing) {
+      // الدالة غير منشورة بعد — نعود للوسيط القديم بدل تعطيل النشر كليًّا.
+      res = await fetch(SB + '/functions/v1/imprint-publish-now', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: SB_KEY,
+          Authorization: 'Bearer ' + jwt
+        },
+        body: JSON.stringify({ post_id: postId })
+      });
+      data = await res.json().catch(() => ({}));
+    }
 
     if (!res.ok) {
-      status('تعذّر النشر: ' + (data.error || res.status), 'err');
-      toast(data.error || 'تعذّر بدء النشر.', 'err');
+      const needs = data && data.needs && data.needs.length
+        ? ' — المطلوب: ' + data.needs.join(' + ')
+        : '';
+      status('تعذّر النشر: ' + (data.error || res.status) + needs, 'err');
+      toast((data.error || 'تعذّر بدء النشر.') + needs, 'err');
       return data;
     }
 
     const results = data?.worker?.results || [];
     const ok = results.filter(r => r && r.ok);
     const bad = results.filter(r => r && !r.ok);
+
+    // دليل النشر: نُظهر معرّف المنشور الذي أعادته المنصة إن وُجد.
+    const proof = (data && data.verification || []).filter(v => v && v.ok && v.proof);
+    if (proof.length) {
+      const el = $('status');
+      if (el) {
+        el.textContent = 'تم النشر — الدليل: ' + proof
+          .map(v => v.platform + ' (' + v.proof.external_post_id + ')').join(' · ');
+      }
+      toast('نُشر فعلًا. معرّف المنشور من المنصة: ' + proof[0].proof.external_post_id, 'ok');
+    }
 
     if (!results.length) {
       status('أُضيفت المهام للطابور. ستُنفّذ خلال دقيقة.', 'ok');
@@ -1354,7 +1402,7 @@ function renderAccountPanel() {
     $('logout').onclick = async () => {
       try { await sbRequest('/auth/v1/logout', { method: 'POST' }); } catch {}
       persistSession(null);
-      loadedId = null; loadedPath = null; savedFile = null;
+      loadedId = null; loadedPath = null; loadedType = null; savedFile = null;
       closePanel();
       toast('تم تسجيل الخروج.', 'ok');
       status('تم تسجيل الخروج. المسودات المحفوظة لم تُحذف.');
@@ -1455,6 +1503,263 @@ function handleOAuthReturn() {
   return true;
 }
 
+/* --------------------------- الهوية: شعار وبانر -------------------------- */
+/**
+ * أربعة أهداف، ولكل هدف نتيجته الحقيقية:
+ *   site_logo/site_banner → تُحفظ وتظهر في الواجهة (نتحكم بها كليًّا)
+ *   fb_picture            → API حقيقي على الصفحة
+ *   fb_cover              → نحاول فعلًا، وقد يرفض فيسبوك — فنُظهر ردّه لا نُجمّله
+ */
+const BRAND_TARGETS = [
+  { id: 'site_logo',   label: 'شعار الواجهة',        hint: 'يستبدل الشعار أعلى القائمة الجانبية.', accept: 'image/*' },
+  { id: 'site_banner', label: 'بانر الواجهة',        hint: 'صورة تظهر في أعلى لوحة الهوية.', accept: 'image/*' },
+  { id: 'fb_picture',  label: 'صورة صفحة فيسبوك',    hint: 'تُغيَّر عبر Graph API — ويؤكدها فيسبوك.', accept: 'image/jpeg,image/png' },
+  { id: 'fb_cover',    label: 'غلاف صفحة فيسبوك',    hint: 'يُحاول عبر API. قد يرفضه فيسبوك لقيد business_management.', accept: 'image/jpeg,image/png' }
+];
+
+function renderBrandPanel() {
+  if (!isSignedIn()) {
+    panelShell('الهوية', 'سجّل الدخول لتعديل الشعار والبانر.',
+      '<button class="primary" id="goLogin" type="button">تسجيل الدخول</button>');
+    $('goLogin').onclick = () => renderAccountPanel();
+    return;
+  }
+
+  const rows = BRAND_TARGETS.map(t => (
+    '<div class="brand-row" data-target="' + t.id + '">' +
+      '<div class="brand-info"><strong>' + t.label + '</strong><small>' + t.hint + '</small></div>' +
+      '<div class="brand-actions">' +
+        '<input type="file" id="file-' + t.id + '" accept="' + t.accept + '" hidden>' +
+        '<button type="button" class="secondary" data-pick="' + t.id + '">اختر صورة</button>' +
+      '</div>' +
+      '<div class="brand-result" id="res-' + t.id + '" role="status" aria-live="polite"></div>' +
+    '</div>'
+  )).join('');
+
+  panelShell('الهوية — الشعار والبانر',
+    'الملفات تُرفع إلى مساحتك الخاصة، والرموز تبقى على الخادم. لكل هدف نتيجته الحقيقية.', rows);
+
+  BRAND_TARGETS.forEach(t => {
+    const pick = document.querySelector('[data-pick="' + t.id + '"]');
+    const input = $('file-' + t.id);
+    if (!pick || !input) return;
+    pick.onclick = () => input.click();
+    input.onchange = () => {
+      const f = input.files && input.files[0];
+      if (f) applyBrand(t, f);
+    };
+  });
+}
+
+/** يرفع الصورة ثم يطلب من الخادم تطبيقها على الهدف المحدد. */
+async function applyBrand(target, file) {
+  const out = $('res-' + target.id);
+  const say = (msg, kind) => {
+    if (!out) return;
+    out.dataset.kind = kind || '';
+    out.textContent = msg;
+  };
+
+  if (file.size > 8 * 1024 * 1024) {
+    say('الصورة أكبر من ٨ ميغابايت. اضغطها ثم أعد المحاولة.', 'err');
+    return;
+  }
+  if (!String(file.type).startsWith('image/')) {
+    say('اختر صورة (JPG أو PNG).', 'err');
+    return;
+  }
+
+  say('جارٍ الرفع...');
+  try {
+    const path = await uploadMedia(file, p => say('جارٍ الرفع... ' + p + '%'));
+    const jwt = session && session.access_token;
+    if (!jwt) { say('انتهت الجلسة — أعد تسجيل الدخول.', 'err'); return; }
+
+    const isSite = target.id.startsWith('site_');
+    const url = isSite
+      ? SB + '/functions/v1/imprint-brand-kit?mode=site'
+      : SB + '/functions/v1/imprint-brand-kit?mode=' + (target.id === 'fb_picture' ? 'fb-picture' : 'fb-cover');
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SB_KEY, Authorization: 'Bearer ' + jwt },
+      body: JSON.stringify({ kind: target.id, storage_path: path })
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.ok) {
+      say((data.error || ('HTTP ' + res.status)) + (data.explanation ? ' ' + data.explanation : ''), 'err');
+      toast(data.error || 'لم يُطبَّق التغيير.', 'err');
+      return;
+    }
+
+    if (isSite) {
+      say('حُفظ الأصل. حدّث الصفحة لتراه في الواجهة.', 'ok');
+      if (target.id === 'site_logo') applySiteLogo(path);
+      if (target.id === 'site_banner') applySiteBanner(path);
+    } else {
+      say(data.note || 'أكّد فيسبوك التغيير.', 'ok');
+    }
+    toast('تم.', 'ok');
+  } catch (e) {
+    say(humanError(e), 'err');
+  }
+}
+
+/** يجلب أصول الموقع العامة ويطبّقها. الرابط عام كي يراه الزائر. */
+async function loadBrandAssets() {
+  try {
+    const rows = await sbRequest('/rest/v1/brand_assets?select=kind,storage_path');
+    (rows || []).forEach(r => {
+      if (r.kind === 'site_logo' && r.storage_path) applySiteLogo(r.storage_path);
+      if (r.kind === 'site_banner' && r.storage_path) applySiteBanner(r.storage_path);
+    });
+  } catch { /* لا أصول بعد — الشعار المدمج يبقى */ }
+}
+
+function publicMediaUrl(path) {
+  return SB + '/storage/v1/object/public/' + BUCKET + '/' + path.split('/').map(encodeURIComponent).join('/');
+}
+
+function applySiteLogo(path) {
+  const img = document.querySelector('.real-logo');
+  if (img) img.src = publicMediaUrl(path);
+}
+
+function applySiteBanner(path) {
+  const brand = document.querySelector('.brand');
+  if (!brand) return;
+  let el = document.getElementById('siteBanner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'siteBanner';
+    el.className = 'site-banner';
+    brand.parentNode.insertBefore(el, brand.nextSibling);
+  }
+  el.style.backgroundImage = 'url("' + publicMediaUrl(path) + '")';
+}
+
+/* ---------------------- شكل النشر + فحص الصلاحيات ----------------------- */
+/** النوع المختار حاليًا: 'post' أو 'reel'. */
+function selectedFormat() {
+  const el = document.querySelector('.format-opt.selected');
+  return el && el.dataset.format === 'reel' ? 'reel' : 'post';
+}
+
+/** آخر نتيجة فحص — تُستخدم لتفسير سبب الرفض بدل تخمينه. */
+let capsCache = null;
+
+function setFormat(kind) {
+  loadBrandAssets();
+  document.querySelectorAll('.format-opt').forEach(b => {
+    const on = b.dataset.format === kind;
+    b.classList.toggle('selected', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+  const hint = $('formatHint');
+  if (hint) {
+    hint.textContent = kind === 'reel'
+      ? 'الريلز على فيسبوك تُنشر عبر مسار مستقل (/video_reels) لا عبر /videos. الملف يجب أن يكون فيديو رأسيًّا.'
+      : 'المنشور العادي يُنشر كصورة أو فيديو في خلاصة الصفحة.';
+  }
+  probeCaps();
+}
+
+/**
+ * يسأل الخادم: ماذا تستطيع هذه الصلاحيات فعلًا؟
+ * لا نُظهر «ممكن» إلا بعد ردّ من الخادم يجيب بعد سؤال Graph.
+ */
+async function probeCaps() {
+  const box = $('capsBox');
+  const list = $('capsList');
+  const title = $('capsTitle');
+  if (!box || !list) return;
+
+  if (!isSignedIn()) {
+    box.hidden = false;
+    title.textContent = 'فحص الصلاحيات';
+    list.innerHTML = '';
+    const li = document.createElement('li');
+    li.dataset.ok = 'warn';
+    li.innerHTML = '<span class="cap-mark">•</span><span>سجّل الدخول واربط صفحة فيسبوك لتظهر إمكانيات الحساب الحقيقية.</span>';
+    list.appendChild(li);
+    return;
+  }
+
+  box.hidden = false;
+  title.textContent = 'جارٍ سؤال فيسبوك عن صلاحيات هذا الرمز...';
+  list.innerHTML = '';
+
+  const wantReel = selectedFormat() === 'reel';
+  try {
+    if (!await ensureSession()) return;
+    const jwt = session && session.access_token;
+    if (!jwt) return;
+    const res = await fetch(SB + '/functions/v1/imprint-brand?mode=capabilities&platform=Facebook', {
+      headers: { apikey: SB_KEY, Authorization: 'Bearer ' + jwt }
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      capsCache = null;
+      title.textContent = 'تعذّر فحص الصلاحيات';
+      const li = document.createElement('li');
+      li.dataset.ok = 'false';
+      li.innerHTML = '<span class="cap-mark">✕</span><span></span>';
+      li.lastChild.textContent = data.error || ('HTTP ' + res.status);
+      list.appendChild(li);
+      return;
+    }
+    capsCache = data.caps || {};
+    title.textContent = 'ما تستطيعه صلاحياتك الآن';
+
+    const rows = [
+      ['post', 'منشور عادي'],
+      ['reel', 'ريلز'],
+      ['picture', 'تغيير صورة الصفحة'],
+      ['cover', 'تغيير غلاف الصفحة']
+    ];
+    rows.forEach(([key, label]) => {
+      const cap = capsCache[key];
+      if (!cap) return;
+      const li = document.createElement('li');
+      // الغلاف غير المضمون يظهر كتحذير لا كرفض قاطع — لأننا نحاوله فعلًا
+      const mark = cap.ok ? '✓' : (key === 'cover' ? '!' : '✕');
+      li.dataset.ok = cap.ok ? 'true' : (key === 'cover' ? 'warn' : 'false');
+      const span = document.createElement('span');
+      const name = document.createElement('span');
+      name.className = 'cap-name';
+      name.textContent = label + ': ';
+      span.append(name, document.createTextNode(cap.reason_ar || ''));
+      if (!cap.ok && cap.needs && cap.needs.length) {
+        const needs = document.createElement('em');
+        needs.textContent = ' المطلوب: ' + cap.needs.join(' + ');
+        span.appendChild(needs);
+      }
+      const m = document.createElement('span');
+      m.className = 'cap-mark';
+      m.textContent = mark;
+      li.append(m, span);
+      list.appendChild(li);
+    });
+
+    // تنبيه قبل النشر: إن اخترت ريلز وهي غير ممكنة، لا نتركك تكتشف ذلك بعد الرفع
+    if (wantReel && capsCache.reel && !capsCache.reel.ok) {
+      const li = document.createElement('li');
+      li.dataset.ok = 'warn';
+      li.innerHTML = '<span class="cap-mark">!</span><span></span>';
+      li.lastChild.textContent = 'اخترت «ريلز» لكن الرمز لا يستطيع نشرها. أضف الصلاحيات المطلوبة، أو بدّل إلى «منشور عادي».';
+      list.appendChild(li);
+    }
+  } catch (e) {
+    title.textContent = 'تعذّر الوصول إلى خدمة الفحص';
+    const li = document.createElement('li');
+    li.dataset.ok = 'false';
+    li.innerHTML = '<span class="cap-mark">✕</span><span></span>';
+    li.lastChild.textContent = humanError(e);
+    list.appendChild(li);
+  }
+}
+
 /* --------------------------------- التمهيد ------------------------------- */
 function boot() {
   restoreSession();
@@ -1498,6 +1803,11 @@ function boot() {
   const pn = $('publishNow');
   if (pn) pn.onclick = () => saveAndPublishNow().catch(e => toast(humanError(e), 'err'));
   $('newDraft').onclick = () => newDraft();
+  document.querySelectorAll('.format-opt').forEach(b => {
+    b.onclick = () => setFormat(b.dataset.format);
+  });
+  const cr = $('capsRefresh');
+  if (cr) cr.onclick = () => probeCaps();
 
   if (isSignedIn()) {
     if (!fromOAuth) status('مرحبًا بعودتك، ' + session.user.email + '.');
@@ -1518,4 +1828,6 @@ window.saveDraft = saveDraft;
 window.openDraft = openDraft;
 window.deleteDraft = deleteDraft;
 window.openPanel = openPanel;
+window.renderBrandPanel = renderBrandPanel;
+window.selectedFormat = selectedFormat;
 window.closePanel = closePanel;
