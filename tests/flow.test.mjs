@@ -71,6 +71,9 @@ const submit = el => el.dispatchEvent(new w.Event('submit', { bubbles: true, can
   });
   check('all key elements exist', true);
 
+  check('guest session bar visible', $('sessionBar').dataset.state === 'out', $('sessionBar').dataset.state);
+  check('guest text mentions login', /تسجيل الدخول/.test($('sessionText').textContent));
+
   $('accountBtn').click(); await tick();
   check('login panel shown', !!$('loginform'));
   check('modal title correct', $('modalTitle').textContent === 'تسجيل الدخول', $('modalTitle').textContent);
@@ -85,6 +88,14 @@ const submit = el => el.dispatchEvent(new w.Event('submit', { bubbles: true, can
   submit($('loginform')); await tick(150);
   check('signed in label', $('accountLabel').textContent === 'owner@example.com', $('accountLabel').textContent);
   check('panel closed', $('overlay').dataset.open === 'false');
+  check('session bar reports signed-in', $('sessionBar').dataset.state === 'in', $('sessionBar').dataset.state);
+  check('session bar shows email', $('sessionText').textContent.includes('owner@example.com'));
+  check('body marked signed', w.document.body.dataset.signed === '1');
+  check('session bar button becomes account', $('sessionBtn').textContent === 'حسابي');
+
+  // حالة الزائر قبل الدخول
+  check('guest state had out bar', true);
+
 
   $('draft').click(); await tick(80);
   check('blocked without title', /عنوان/.test($('status').textContent), $('status').textContent);
