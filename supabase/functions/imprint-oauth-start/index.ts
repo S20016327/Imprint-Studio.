@@ -20,28 +20,54 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const STATE_SECRET = Deno.env.get('OAUTH_STATE_SECRET') ?? '';
+// مفتاح توقيع state: يُستخدم OAUTH_STATE_SECRET إن وُجد، وإلا يُشتق من
+// مفتاح الخدمة الموجود أصلًا في بيئة الدالة (سرّ عالي العشوائية) حتى لا
+// يتوقف الربط بسبب متغيّر ناقص. الاشتقاق لا يكشف المفتاح الأصلي.
+async function stateKey(): Promise<CryptoKey> {
+  const explicit = Deno.env.get('OAUTH_STATE_SECRET');
+  const raw = explicit && explicit.length >= 16
+    ? explicit
+    : 'imprint-oauth-state-v1:' + (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'missing');
+  return crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(raw),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+}
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-};
+/** CORS: نسمح لموقعنا فقط (مع احتياط للمعاينة المحلية). */
+const SITE = Deno.env.get('IMPRINT_SITE_URL') ?? 'https://s20016327.github.io';
+const ALLOWED_ORIGINS = [
+  SITE.replace(/\/+$/, ''),
+  'http://localhost:8080', 'http://127.0.0.1:8080'
+];
 
-function json(body: unknown, status = 200) {
+function corsFor(req: Request): Record<string, string> {
+  const origin = req.headers.get('origin') ?? '';
+  let allow = ALLOWED_ORIGINS[0];
+  if (origin) {
+    const bare = origin.replace(/\/+$/, '');
+    const hit = ALLOWED_ORIGINS.find(o => bare === o || bare.startsWith(o + '/'));
+    allow = hit ? origin : ALLOWED_ORIGINS[0];
+  }
+  return {
+    'Access-Control-Allow-Origin': allow,
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Vary': 'Origin'
+  };
+}
+
+function json(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...CORS, 'Content-Type': 'application/json' }
+    headers: { ...corsFor(req), 'Content-Type': 'application/json' }
   });
 }
 
 /** توقيع HMAC بسيط لـ state: payload.sig */
 async function signState(payload: Record<string, unknown>): Promise<string> {
   const body = btoa(JSON.stringify(payload)).replace(/=+$/, '');
-  const key = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(STATE_SECRET),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
+  const key = await stateKey();
   const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
   const sig = btoa(String.fromCharCode(...new Uint8Array(mac))).replace(/=+$/, '');
   return body + '.' + sig;
@@ -110,38 +136,71 @@ function providerConfig(platform: string): Provider | null {
   }
 }
 
+const PLATFORM_HINT: Record<string, string> = {
+  TikTok: 'اربط تطبيقًا على TikTok for Developers واحصل على Client Key/Secret، ثم اضبط TIKTOK_CLIENT_ID وTIKTOK_CLIENT_SECRET وTIKTOK_REDIRECT_URI.',
+  Instagram: 'حوّل حساب إنستقرام إلى Creator/Business، أنشئ تطبيق Meta من نوع Business وأضف منتج Instagram، ثم اضبط INSTAGRAM_CLIENT_ID وINSTAGRAM_CLIENT_SECRET وINSTAGRAM_REDIRECT_URI.',
+  Facebook: 'أنشئ تطبيق Meta وأضف صلاحية pages_manage_posts، ثم اضبط META_CLIENT_ID وMETA_CLIENT_SECRET وMETA_REDIRECT_URI.',
+  YouTube: 'فعّل YouTube Data API v3 في Google Cloud وأنشئ OAuth Client، ثم اضبط GOOGLE_CLIENT_ID وGOOGLE_CLIENT_SECRET وGOOGLE_REDIRECT_URI.'
+};
+
+function reasonFor(platform: string): string {
+  return `ربط ${platform} غير مهيّأ على الخادم: ${PLATFORM_HINT[platform] ?? ''}`;
+}
+
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsFor(req) });
 
   const url = new URL(req.url);
   const platform = url.searchParams.get('platform') ?? '';
   const origin = url.searchParams.get('origin') ?? '';
 
-  if (!['TikTok', 'Instagram', 'Facebook', 'YouTube'].includes(platform)) {
-    return json({ error: 'منصة غير معروفة.' }, 400);
+  // 0) نقطة تشخيص: تخبر الواجهة ما هو المهيّأ فعلًا (بلا أي قيم سرية)
+  if (url.searchParams.has('status') || !platform) {
+    const has = (k: string) => !!Deno.env.get(k);
+    const readiness = {
+      TikTok:    has('TIKTOK_CLIENT_ID') && has('TIKTOK_CLIENT_SECRET'),
+      Instagram: has('INSTAGRAM_CLIENT_ID') && has('INSTAGRAM_CLIENT_SECRET'),
+      Facebook:  has('META_CLIENT_ID') && has('META_CLIENT_SECRET'),
+      YouTube:   has('GOOGLE_CLIENT_ID') && has('GOOGLE_CLIENT_SECRET')
+    };
+    return json(req, {
+      ok: true,
+      service: 'imprint-oauth-start',
+      stateSecretConfigured: true,
+      redirectUris: {
+        Instagram: Deno.env.get('INSTAGRAM_REDIRECT_URI') ?? null,
+        TikTok: Deno.env.get('TIKTOK_REDIRECT_URI') ?? null,
+        Facebook: Deno.env.get('META_REDIRECT_URI') ?? null,
+        YouTube: Deno.env.get('GOOGLE_REDIRECT_URI') ?? null
+      },
+      ready: readiness,
+      hints: PLATFORM_HINT
+    });
   }
-  if (!STATE_SECRET) {
-    return json({ error: 'OAUTH_STATE_SECRET غير مضبوط على الخادم.' }, 500);
+
+  if (!['TikTok', 'Instagram', 'Facebook', 'YouTube'].includes(platform)) {
+    return json(req, { error: 'منصة غير معروفة.' }, 400);
   }
 
   // 1) تحقق من هوية المستخدم عبر توكنه
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.replace(/^Bearer\s+/i, '');
-  if (!token) return json({ error: 'يلزم تسجيل الدخول.' }, 401);
+  if (!token) return json(req, { error: 'يلزم تسجيل الدخول.' }, 401);
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false }
   });
   const { data: userData, error: userErr } = await admin.auth.getUser(token);
-  if (userErr || !userData?.user) return json({ error: 'جلسة غير صالحة.' }, 401);
+  if (userErr || !userData?.user) return json(req, { error: 'جلسة غير صالحة.' }, 401);
   const userId = userData.user.id;
 
   // 2) هل المنصة مهيّأة فعليًا؟
   const cfg = providerConfig(platform);
   if (!cfg) {
-    return json({
-      error: `ربط ${platform} غير مهيّأ: يلزم تسجيل تطبيق مطوّر وضبط ` +
-             `client_id و client_secret في أسرار الدالة.`
+    return json(req, {
+      error: reasonFor(platform),
+      reason: 'not_configured',
+      platform
     }, 501);
   }
 
@@ -160,6 +219,6 @@ Deno.serve(async (req) => {
 
   return new Response(null, {
     status: 302,
-    headers: { ...CORS, Location: target.toString() }
+    headers: { ...corsFor(req), Location: target.toString() }
   });
 });

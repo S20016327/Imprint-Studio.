@@ -76,6 +76,21 @@ supabase functions deploy imprint-oauth-start    --no-verify-jwt
 supabase functions deploy imprint-oauth-callback --no-verify-jwt
 ```
 
+> **حالة النشر الحالية (مُتحقَّق منها):** الدالتان `imprint-oauth-start`
+> (v1) و`imprint-oauth-callback` (v1) منشورتان و`ACTIVE` على المشروع
+> `yxmetzdoxbqndecslhlu` مع `verify_jwt = false`. أي أن «خدمة الربط غير منشورة»
+> لم تعد صحيحة — ما ينقص هو مفاتيح المنصات فقط.
+
+### التحقق السريع من الخادم
+
+```bash
+curl -s "https://yxmetzdoxbqndecslhlu.supabase.co/functions/v1/imprint-oauth-start?status=1"
+```
+
+الرد يحوي `ready` لكل منصة (`true/false`) و`redirectUris` بدون أي قيمة سرية.
+هذه هي نفس النقطة التي تقرأها الواجهة، فيظهر في لوحة الحسابات سبب دقيق لكل
+منصة بدل رسالة عامة.
+
 ### تدفق الربط الكامل
 
 1. المستخدم يضغط «ربط» ← `imprint-oauth-start` يتحقق من JWT ويوقّع `state` (HMAC، صالح 15 دقيقة).
