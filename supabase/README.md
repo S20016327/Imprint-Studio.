@@ -8,6 +8,7 @@
 supabase/
 └── functions/
     ├── imprint-publisher/index.ts       عامل النشر المجدول
+    ├── imprint-account-link/index.ts    ربط برمز وصول مباشر (بديل OAuth)
     ├── imprint-oauth-start/index.ts     بدء ربط حساب منصة
     └── imprint-oauth-callback/index.ts  عودة الربط: تبادل الرمز وحفظه في Vault
 ```
@@ -101,6 +102,25 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 ```
 
 ويُرفض هذا الخطأ تلقائيًا في `npm test` (فحص لكل ملف في `supabase/functions/`).
+
+
+### مسار ثانٍ للربط: رمز وصول مباشر
+
+`imprint-account-link` يُغني عن OAuth كليًا للتشغيل السريع:
+
+```bash
+curl -s "$SUPABASE_URL/functions/v1/imprint-account-link?ping=1"
+# {"ok":true,"build":"v1-token-link","booted":true,"platforms":[...],"help":{...}}
+```
+
+`POST` بمحتوى `{ "platform": "YouTube", "token": "…" }` مع ترويسة
+`Authorization: Bearer <JWT المستخدم>`. الخادم يتحقق من الرمز لدى المنصة
+**قبل** الحفظ، ثم يخزّنه في Vault ويعيد `{ ok, account: { id, name } }`.
+الرمز لا يُعاد أبدًا ولا يُسجَّل.
+
+> **إصلاح تسريب:** إعادة الربط كانت تُبقي السر القديم في Vault. المشغّل
+> `social_accounts_vault_cleanup_on_update` يحذفه الآن. مُثبَّت: عدد الأسرار
+> يبقى 1 بعد إعادة الربط بدل أن يصبح 2.
 
 ### فحص الإقلاع بعد كل نشر (لا يكفي اختبار محلي)
 

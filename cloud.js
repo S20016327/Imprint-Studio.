@@ -702,7 +702,7 @@ let oauthStatus = null;        // كائن الحالة آخر مرة نجح ف�
 let oauthStatusAt = 0;         // وقت آخر جلب (كاش دقيقة)
 
 async function fetchOAuthStatus(force = false) {
-  if (!force && oauthStatus && Date.now() - oauthStatusAt < 60_000) return oauthStatus;
+  if (!force && oauthStatus && Date.now() - oauthStatusAt < 60_000 && oauthStatus.linkHelp) return oauthStatus;
   try {
     const res = await fetch(SB + '/functions/v1/imprint-oauth-start?status=1', {
       headers: { apikey: SB_KEY }
@@ -730,6 +730,22 @@ async function fetchOAuthStatus(force = false) {
       oauthStatus = { deployed: false, network: true };
     }
   }
+  // خطوات الحصول على رمز من الخادم (نفس المصدر الذي يتحقق منه)
+  try {
+    const r = await fetch(SB + '/functions/v1/imprint-account-link?ping=1', { headers: { apikey: SB_KEY } });
+    if (r.ok) {
+      const text = await r.text();
+      let d = {};
+      try { d = JSON.parse(text); } catch { d = {}; }
+      if (d && d.build) {
+        oauthStatus.linkDeployed = true;
+        oauthStatus.linkHelp = d.help || null;
+      }
+    }
+  } catch {
+    oauthStatus.linkDeployed = false;
+  }
+
   oauthStatusAt = Date.now();
   return oauthStatus;
 }
@@ -832,6 +848,144 @@ async function markLinkedPlatforms() {
   } catch { /* غير حرج */ }
 }
 
+/** سبب مختصر لكل منصة — سطر واحد لا فقرة. */
+const SHORT_NEED = {
+  TikTok: 'يحتاج تطبيق TikTok for Developers مع صلاحية النشر.',
+  Instagram: 'يحتاج حساب Creator/Business ثم تطبيق Meta (بلا صفحة فيسبوك).',
+  Facebook: 'يحتاج صفحة تملكها وتطبيق Meta بصلاحية pages_manage_posts.',
+  YouTube: 'يحتاج مشروع Google Cloud مع تفعيل YouTube Data API v3.'
+};
+
+/** يفتح حقل لصق الرمز داخل صف المنصة، مع خطوات الحصول عليه. */
+async function openTokenBox(row, platform) {
+  const existing = row.querySelector('.token-box');
+  if (existing) { existing.remove(); return; }
+
+  const box = document.createElement('div');
+  box.className = 'token-box';
+
+  const label = document.createElement('label');
+  label.textContent = 'الصق رمز الوصول من ' + platform + ':';
+  label.setAttribute('for', 'tokenInput');
+
+  const input = document.createElement('input');
+  input.id = 'tokenInput';
+  input.type = 'password';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.placeholder = 'access token…';
+  input.setAttribute('aria-describedby', 'tokenMsg');
+
+  const row2 = document.createElement('div');
+  row2.className = 'token-row';
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'connect-btn';
+  save.textContent = 'تحقق واحفظ';
+
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'connect-btn unlink';
+  cancel.textContent = 'إلغاء';
+  cancel.onclick = () => box.remove();
+
+  const msg = document.createElement('div');
+  msg.className = 'token-msg';
+  msg.id = 'tokenMsg';
+  msg.setAttribute('role', 'status');
+  msg.setAttribute('aria-live', 'polite');
+
+  const secured = document.createElement('ol');
+  const securedTitle = document.createElement('div');
+  securedTitle.style.fontSize = '10.5px';
+  securedTitle.style.fontWeight = '600';
+  securedTitle.style.color = 'var(--ink-2)';
+  securedTitle.textContent = 'الرمز لا يُحفظ في المتصفح، ويُخزَّن مشفّرًا على الخادم بعد التحقق.';
+
+  row2.append(save, cancel);
+  box.append(label, input, row2, msg, securedTitle, secured);
+
+  // اجلب خطوات الحصول على الرمز من الخادم (مصدر واحد للحقيقة)
+  const svc = await fetchOAuthStatus();
+  const help = (svc && svc.linkHelp && svc.linkHelp[platform]) || null;
+  if (help && help.where) {
+    const where = document.createElement('div');
+    where.className = 'where';
+    where.textContent = help.where;
+    box.appendChild(where);
+  }
+  if (help && Array.isArray(help.steps)) {
+    help.steps.forEach(step => {
+      const li = document.createElement('li');
+      li.textContent = step;
+      secured.appendChild(li);
+    });
+  }
+
+  save.onclick = async () => {
+    const token = input.value.trim();
+    if (token.length < 20) {
+      msg.dataset.kind = 'err';
+      msg.textContent = 'الرمز قصير جدًا — تأكد أنك نسخته كاملًا.';
+      return;
+    }
+    save.disabled = true;
+    cancel.disabled = true;
+    msg.dataset.kind = '';
+    msg.textContent = 'جارٍ التحقق من الرمز لدى ' + platform + '…';
+    try {
+      const res = await fetch(SB + '/functions/v1/imprint-account-link', {
+        method: 'POST',
+        headers: {
+          apikey: SB_KEY,
+          Authorization: 'Bearer ' + session.access_token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ platform, token })
+      });
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { data = {}; }
+
+      if (res.ok && data.ok) {
+        input.value = '';
+        msg.dataset.kind = 'ok';
+        msg.textContent = 'تم الربط: ' + (data.account && data.account.name ? data.account.name : platform) + ' ✅';
+        toast('تم ربط ' + platform + ' بنجاح.', 'ok');
+        status('تم ربط ' + platform + '. الرمز محفوظ مشفّرًا على الخادم.', 'ok');
+        setTimeout(() => { renderAccountsPanel(); refreshAccountsBadge(); markLinkedPlatforms(); }, 1200);
+        return;
+      }
+
+      if (res.status === 401) {
+        msg.dataset.kind = 'err';
+        msg.textContent = 'انتهت صلاحية الجلسة. سجّل الدخول من جديد.';
+        return;
+      }
+      msg.dataset.kind = 'err';
+      msg.textContent = data.error || humanError(text);
+      if (data.help && Array.isArray(data.help.steps)) {
+        secured.innerHTML = '';
+        data.help.steps.forEach(step => {
+          const li = document.createElement('li');
+          li.textContent = step;
+          secured.appendChild(li);
+        });
+      }
+    } catch {
+      msg.dataset.kind = 'err';
+      msg.textContent = 'تعذر الوصول إلى خدمة الربط على الخادم.';
+    } finally {
+      save.disabled = false;
+      cancel.disabled = false;
+    }
+  };
+
+  row.appendChild(box);
+  input.focus({ preventScroll: true });
+}
+
 function renderAccountsPanel() {
   if (!isSignedIn()) {
     panelShell('الحسابات المرتبطة', 'سجّل الدخول أولًا لعرض حساباتك وربط منصاتك.',
@@ -866,9 +1020,15 @@ function renderAccountsPanel() {
     } else {
       const readyNames = Object.keys(PLATFORM_META).filter(k => svc.ready && svc.ready[k]);
       svcLine.dataset.state = readyNames.length ? 'ok' : 'warn';
-      svcLine.textContent = readyNames.length
-        ? 'الخادم جاهز لربط: ' + readyNames.join('، ') + '. تحتاج فقط موافقتك على صفحة المنصة.'
-        : 'الخدمة منشورة، لكن لا منصة مهيّأة بعد: يلزم إضافة مفاتيح تطبيق مطوّر في أسرار الخادم (لا تُوضع في المتصفح).';
+      if (readyNames.length) {
+        svcLine.textContent = 'الخادم جاهز لربط: ' + readyNames.join('، ') +
+          '. تحتاج فقط موافقتك على صفحة المنصة.';
+      } else if (svc.linkDeployed) {
+        svcLine.dataset.state = 'ok';
+        svcLine.textContent = 'الربط جاهز: استخدم «ربط برمز» أمام أي منصة — الرمز يُتحقق منه ويُحفظ مشفّرًا على الخادم.';
+      } else {
+        svcLine.textContent = 'الخدمة منشورة، لكن لا منصة مهيّأة بعد: يلزم مفاتيح تطبيق مطوّر أو مسار الربط برمز.';
+      }
     }
     list.appendChild(svcLine);
 
@@ -893,19 +1053,24 @@ function renderAccountsPanel() {
           (acc.expires_at ? ' · ينتهي ' + fmtDate(acc.expires_at) : '')
         : 'غير مرتبط';
 
-      const need = document.createElement('small');
-      need.className = 'need';
+      // سطر واحد مختصر + خطوة واحدة قابلة للتنفيذ، بدل فقرة طويلة تفيض
+      const need = document.createElement('div');
+      need.className = 'need-line';
+
+      const needText = document.createElement('span');
+      needText.className = 'need-text';
+
       if (acc) {
-        need.textContent = acc.last_error || 'جاهز لاستقبال مهام النشر عند تفعيل محوّل المنصة.';
-      } else if (svc && svc.deployed && svc.ready && svc.ready[platform]) {
-        need.textContent = 'الخادم مهيّأ لهذه المنصة — اضغط «ربط» للموافقة على صفحة المنصة الرسمية.';
+        needText.textContent = acc.last_error || 'جاهز — بانتظار تفعيل النشر لهذه المنصة.';
+        need.append(needText);
       } else {
-        need.textContent = (svc && svc.hints && svc.hints[platform]) || ({
-          TikTok: 'يلزم تطبيق على TikTok for Developers ومراجعة Content Posting.',
-          Instagram: 'يلزم تحويل الحساب إلى Creator/Business ثم تطبيق Meta من نوع Business (بدون صفحة فيسبوك).',
-          Facebook: 'يلزم تطبيق Meta مع صلاحية pages_manage_posts وصفحة تملكها.',
-          YouTube: 'يلزم مشروع Google Cloud مع تفعيل YouTube Data API.'
-        })[platform];
+        needText.textContent = SHORT_NEED[platform];
+        const how = document.createElement('button');
+        how.type = 'button';
+        how.className = 'link-btn-ghost';
+        how.textContent = 'ربط برمز';
+        how.onclick = () => openTokenBox(div, platform);
+        need.append(needText, how);
       }
 
       info.append(title, state, need);
