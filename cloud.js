@@ -1169,6 +1169,13 @@ async function publishNow(postId) {
       toast('في الطابور — ستُنشر خلال دقيقة.', 'ok');
     } else if (ok.length && !bad.length) {
       status('نُشر على: ' + ok.map(r => r.platform).join(' و') + '.', 'ok');
+      // ملاحظة الخصوصية: تيك توك غير المدقَّق ينشر «أنا فقط» — لا يصح إخفاؤها
+      const notes = ok.map(r => r.note).filter(Boolean);
+      if (notes.length) {
+        const el = $('status');
+        if (el) el.textContent += ' ' + notes.join(' ');
+        toast(notes.join(' '), 'warn');
+      }
       toast('تم النشر بنجاح.', 'ok');
     } else if (ok.length && bad.length) {
       status('نُشر على ' + ok.map(r => r.platform).join(' و') + '، وفشل على ' +
@@ -1193,7 +1200,19 @@ async function publishNow(postId) {
 }
 
 /** يحفظ المسودة ثم ينشرها فورًا. */
+/**
+ * تيك توك في «انشر الآن» يحتاج تطبيقًا مدقَّقًا عند TikTok للنشر العلني.
+ * لا نُخفي ذلك خلف خطأ API غامض: نُخبر المستخدم بالبديل الذي يعمل فورًا.
+ */
+const TIKTOK_NEEDS_AUDIT =
+  'تيك توك عبر API ينشر «أنا فقط» أو يفشل حتى يُدقَّق التطبيق عند TikTok. ' +
+  'الأسرع الآن: «نسخ إلى TikTok Studio» من جدول المنشورات — ينسخ النص وينزّل الفيديو ويفتح الصفحة.';
+
 async function saveAndPublishNow() {
+  // ننبّه عن تيك توك قبل الحفظ، لا بعده: لا نُهدر رفع الملف ثم نكتشف القيد
+  const chosen = [...document.querySelectorAll('.platform.selected')].map(b => b.dataset.name);
+  if (chosen.includes('TikTok')) toast(TIKTOK_NEEDS_AUDIT, 'warn');
+
   const id = await saveDraft();
   if (!id) return;
   await publishNow(id);
