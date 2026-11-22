@@ -7,7 +7,9 @@
 ```
 supabase/
 └── functions/
-    └── imprint-publisher/index.ts   عامل النشر (Supabase Edge Function)
+    ├── imprint-publisher/index.ts       عامل النشر المجدول
+    ├── imprint-oauth-start/index.ts     بدء ربط حساب منصة
+    └── imprint-oauth-callback/index.ts  عودة الربط: تبادل الرمز وحفظه في Vault
 ```
 
 ## ما هو موجود فعليًا في قاعدة البيانات
@@ -48,6 +50,48 @@ supabase secrets set IMPRINT_CRON_SECRET=<قيمة-عشوائية-طويلة>
 curl -X POST "https://yxmetzdoxbqndecslhlu.supabase.co/functions/v1/imprint-publisher" \
   -H "x-imprint-secret: <القيمة>"
 ```
+
+## ربط الحسابات
+
+```bash
+# 1) سر توقيع state — إلزامي، بدونه ترفض الدالة العمل
+supabase secrets set OAUTH_STATE_SECRET=$(openssl rand -hex 32)
+
+# 2) عنوان الموقع (يُستخدم في إعادة التوجيه بعد الربط)
+supabase secrets set IMPRINT_SITE_URL=https://s20016327.github.io/Imprint-Studio./
+
+# 3) Instagram Login — لاحظ البادئة INSTAGRAM وليس META
+supabase secrets set \
+  INSTAGRAM_CLIENT_ID=... INSTAGRAM_CLIENT_SECRET=... \
+  INSTAGRAM_REDIRECT_URI=https://yxmetzdoxbqndecslhlu.supabase.co/functions/v1/imprint-oauth-callback
+
+# 4) أو TikTok
+supabase secrets set TIKTOK_CLIENT_ID=... TIKTOK_CLIENT_SECRET=... TIKTOK_REDIRECT_URI=...
+
+# 5) أو Google (YouTube)
+supabase secrets set GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GOOGLE_REDIRECT_URI=...
+
+# 6) انشر الدالتين
+supabase functions deploy imprint-oauth-start    --no-verify-jwt
+supabase functions deploy imprint-oauth-callback --no-verify-jwt
+```
+
+### تدفق الربط الكامل
+
+1. المستخدم يضغط «ربط» ← `imprint-oauth-start` يتحقق من JWT ويوقّع `state` (HMAC، صالح 15 دقيقة).
+2. المتصفح يذهب إلى صفحة المنصة الرسمية ويوافق المستخدم.
+3. المنصة تعيده إلى `imprint-oauth-callback` مع `code`.
+4. الدالة تتحقق من `state`، تتبادل `code` برمز وصول (قصير ← طويل لإنستقرام)،
+   تتحقق أن الحساب **احترافي**، ثم:
+   - `store_social_token()` تحفظ الرمز في **Vault** وتعيد معرّفه فقط.
+   - `social_accounts` يحفظ المعرّف والحالة وتاريخ الانتهاء.
+5. المتصفح يعود إلى الموقع برسالة نجاح/فشل واضحة.
+
+الرمز **لا يُخزَّن في الجدول ولا في المتصفح ولا في السجلات**. وفصل الحساب
+يحذف السر من Vault تلقائيًا (مشغّل `social_accounts_vault_cleanup`).
+
+بدون ضبط الأسرار تعيد الدالة **501** برسالة صريحة: «ربط X غير مهيّأ». هذا مقصود:
+لن يُظهر الموقع نجاحًا وهميًا.
 
 ## الجدولة كل دقيقة
 

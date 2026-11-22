@@ -10,6 +10,7 @@ const dom = new JSDOM(merged, { runScripts:'dangerously', url:'https://x.github.
   beforeParse(w) {
     w.URL.createObjectURL = () => 'blob:x'; w.URL.revokeObjectURL = () => {};
     w.scrollTo = () => {};
+    w.matchMedia = w.matchMedia || (q => ({ matches:false, media:q, addEventListener(){}, removeEventListener(){}, addListener(){}, removeListener(){} }));
     // قائمة HTML الصحيحة لا تتضمن هذا العنصر — نضيف حاوية للتقدم إن لزم
     w.fetch = async (u, o={}) => {
       const url=String(u);

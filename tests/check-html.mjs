@@ -18,7 +18,7 @@ console.log('html lang:', d.documentElement.lang, '| dir:', d.documentElement.di
 // references to ids used by JS
 const js = html.match(/<script>([\s\S]*?)<\/script>/)[1] + fs.readFileSync(new URL('../cloud.js', import.meta.url),'utf8');
 const wanted=[...js.matchAll(/\$\('([A-Za-z0-9_]+)'\)/g)].map(m=>m[1]);
-const dynamic=new Set(['toast','draftList','scheduleList','storageSummary','signedEmail','signedSince','loginform','email','password','loginBtn','loginStatus','logout','file','drop','panelContent']);
+const dynamic=new Set(['toast','draftList','scheduleList','storageSummary','signedEmail','signedSince','loginform','email','password','loginBtn','loginStatus','logout','file','drop','panelContent','goLogin','accList','accNote','draftList','progressWrap','progressBar']);
 const missing=[...new Set(wanted)].filter(id=>!d.getElementById(id) && !dynamic.has(id) && !/Count$/.test(id));
 console.log('ids referenced by JS but absent at load:', missing.length?missing:'none');
 console.log('parse errors:', errs.length?errs:'none');
