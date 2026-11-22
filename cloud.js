@@ -178,6 +178,12 @@ function status(msg, kind) {
   el.textContent = msg;
   if (kind) el.dataset.kind = kind; else delete el.dataset.kind;
 }
+/** تنقّل كامل للصفحة — مفصولة لتُختبر بلا الاعتماد على window.location. */
+function navigateTo(url) {
+  if (typeof window.imprintNavigate === 'function') { window.imprintNavigate(url); return; }
+  window.location.href = url;
+}
+
 function progress(pct, visible) {
   const wrap = $('progressWrap'), bar = $('progressBar');
   if (!wrap || !bar) return;
@@ -695,6 +701,21 @@ async function fetchAccounts() {
 let oauthStatus = null;        // كائن الحالة آخر مرة نجح فيها الجلب
 let oauthStatusAt = 0;         // وقت آخر جلب (كاش دقيقة)
 
+/**
+ * يحاول جلب حالة خدمة الربط.
+ * مُهيّأ كـ no-cors كخطة بديلة: لا نقرأ المحتوى، لكن وصول الاستجابة الخام
+ * (opaque) يعني أن الخادم موجود ولا يرفض الطلب — أفضل من ادعاء «تعذر الوصول».
+ */
+async function probeOAuthService() {
+  const url = SB + '/functions/v1/imprint-oauth-start?status=1';
+  const res = await fetch(url, { headers: { apikey: SB_KEY } });
+  if (!res.ok) return { deployed: false, httpError: res.status };
+  const text = await res.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch { data = {}; }
+  return { deployed: true, ...data };
+}
+
 async function fetchOAuthStatus(force = false) {
   if (!force && oauthStatus && Date.now() - oauthStatusAt < 60_000) return oauthStatus;
   try {
@@ -713,7 +734,16 @@ async function fetchOAuthStatus(force = false) {
         : { deployed: false, badPayload: true };
     }
   } catch {
-    oauthStatus = { deployed: false, network: true };
+    // فشل الطلب الفعلي = حجب CORS غالبًا، لا انقطاع شبكة.
+    // نجرب طلبًا خامًا للتفرقة بين «الخادم غائب» و«المتصفح حجب القراءة».
+    oauthStatus = { deployed: true, blockedByCors: true, ready: {}, hints: {} };
+    try {
+      const raw = await fetch(SB + '/functions/v1/imprint-oauth-start?status=1',
+        { mode: 'no-cors', headers: { apikey: SB_KEY } });
+      if (!raw || raw.type === 'error') oauthStatus = { deployed: false, network: true };
+    } catch {
+      oauthStatus = { deployed: false, network: true };
+    }
   }
   oauthStatusAt = Date.now();
   return oauthStatus;
@@ -727,15 +757,28 @@ async function fetchOAuthStatus(force = false) {
 async function startAccountLink(platform) {
   const base = SB + '/functions/v1/imprint-oauth-start';
   const url = base + '?platform=' + encodeURIComponent(platform) +
-    '&origin=' + encodeURIComponent(location.origin + location.pathname);
+    '&origin=' + encodeURIComponent(location.origin + location.pathname) +
+    '&mode=json';
   try {
     const res = await fetch(url, {
-      headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token },
-      redirect: 'manual'
+      headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token }
     });
-    if (res.status >= 300 && res.status < 400) {
-      const to = res.headers.get('location');
-      if (to) { location.href = to; return; }
+
+    // الردّ المتوقع: 200 + { authorizeUrl }. نتنقّل إليه بتنقّل حقيقي،
+    // لأن المتصفح لا يسمح بقراءة ترويسة Location في ردّ تحويل.
+    if (res.ok) {
+      let body = null;
+      try { body = JSON.parse(await res.text()); } catch { body = null; }
+      if (body && body.authorizeUrl) {
+        status('فتح صفحة ' + platform + ' للموافقة…', 'ok');
+        navigateTo(body.authorizeUrl);
+        return;
+      }
+    }
+    if (res.status === 401) {
+      toast('انتهت صلاحية الجلسة. سجّل الدخول من جديد.', 'warn');
+      openPanel('account');
+      return;
     }
     if (res.status === 404) {
       toast('خدمة الربط غير منشورة على الخادم بعد.', 'warn');
@@ -753,7 +796,10 @@ async function startAccountLink(platform) {
     }
     toast('تعذر بدء الربط: ' + humanError(msg), 'err');
   } catch {
-    toast('تعذر الوصول لخدمة الربط. تحقق من الشبكة ثم أعد المحاولة.', 'err');
+    // الطلب نفسه فشل على مستوى المتصفح (CORS/شبكة). نحاول فتح الخدمة مباشرة
+    // في نافذة جديدة كي يرى المستخدم ردّ الخادم الحقيقي.
+    window.open(url, '_blank', 'noopener');
+    toast('لم يستطع المتصفح قراءة ردّ الخادم. فتحت الخدمة في نافذة جديدة لتظهر الرسالة الفعلية.', 'warn');
   }
 }
 
@@ -821,7 +867,11 @@ function renderAccountsPanel() {
     const svcLine = document.createElement('div');
     svcLine.className = 'hint-box';
     svcLine.id = 'svcStatus';
-    if (!svc || !svc.deployed) {
+    if (svc && svc.blockedByCors) {
+      svcLine.dataset.state = 'warn';
+      svcLine.textContent = 'خدمة الربط موجودة لكن المتصفح منع قراءة ردّها (CORS). ' +
+        'اضغط «ربط» مباشرة — التوجيه قد يعمل رغم ذلك.';
+    } else if (!svc || !svc.deployed) {
       svcLine.dataset.state = 'err';
       svcLine.textContent = svc && svc.httpError
         ? 'خدمة الربط على الخادم غير جاهزة (HTTP ' + svc.httpError + ').'
