@@ -53,6 +53,17 @@
   .row-actions{justify-content:flex-end}
   .avatar span{max-width:110px}
 }
+
+/* ---- شرائح حالة النشر لكل منصة ---- */
+.job-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.job-chip{font-size:10px;padding:4px 9px;border-radius:99px;border:1px solid #e2e9e4;background:#f6f8f5;color:#6f8480;white-space:nowrap}
+.job-chip.queued{background:#f2f5ea;border-color:#e3ead2;color:#7c8a4a}
+.job-chip.running{background:#eef4fb;border-color:#d9e6f6;color:#3f6f9e}
+.job-chip.published{background:#e6f5ef;border-color:#cfeadd;color:#1d7a5f}
+.job-chip.failed{background:#fbeae4;border-color:#f3d6cb;color:#b4553d}
+.job-chip.blocked{background:#fdf7ec;border-color:#f0e3c9;color:#8e7a51}
+.job-chip.canceled{background:#f2f2f2;border-color:#e5e5e5;color:#8b8b8b}
+.job-chip.none{background:transparent;border-style:dashed;color:#a6b2ae}
 </style>
 </head><body>
 <div class="shell">
